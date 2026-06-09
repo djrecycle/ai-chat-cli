@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="$ROOT${PYTHONPATH:+:$PYTHONPATH}"
+
+pick_python() {
+  local candidate
+  for candidate in \
+    "$ROOT/.venv/bin/python" \
+    /usr/bin/python3.12 /usr/bin/python3.11 /usr/bin/python3 \
+    python3.12 python3; do
+    [[ -x "$candidate" ]] || continue
+    # Skip venvs accidentally created from Cursor/Electron AppImage.
+    if "$candidate" -c 'import sys; raise SystemExit(0 if "Cursor" not in sys.executable and "AppImage" not in sys.executable else 1)' 2>/dev/null; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+PYTHON="$(pick_python)" || {
+  echo "aichat: python3 tidak ditemukan." >&2
+  echo "Install Python 3.10+ lalu jalankan: python3 -m venv .venv && .venv/bin/pip install -r requirements.txt" >&2
+  exit 1
+}
+
+exec "$PYTHON" -m chat_cli "$@"
