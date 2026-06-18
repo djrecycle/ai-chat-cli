@@ -11,12 +11,13 @@ from textwrap import shorten, wrap
 from prompt_toolkit.application import Application, get_app
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.clipboard import ClipboardData
+from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import AnyFormattedText
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.key_binding.bindings.auto_suggest import load_auto_suggest_bindings
 from prompt_toolkit.key_binding.key_bindings import merge_key_bindings
-from prompt_toolkit.layout import HSplit, Layout, ScrollablePane, VSplit, Window
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, ScrollablePane, VSplit, Window
 from prompt_toolkit.layout.controls import FormattedTextControl
 from prompt_toolkit.layout.dimension import D
 from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
@@ -37,7 +38,14 @@ from ..providers import ChatMessage, GeminiProvider, LocalAIProvider, OllamaProv
 from ..providers.base import ChatProvider
 from ..suggestions import ChatAutoSuggest
 from ..terminal_file_browser import FileBrowserState, handle_browser_input, render_browser_lines
-from ..ui import split_think_sections, strip_think_tags, with_visible_thinking_prompt
+from ..ui import (
+    sanitize_assistant_output,
+    sanitize_visible_thinking,
+    split_think_sections,
+    strip_think_tags,
+    with_response_format_prompt,
+    with_visible_thinking_prompt,
+)
 
 
 TUI_LOGO = [
@@ -65,6 +73,7 @@ class TuiChatApp:
         self.selected_message_index: int | None = None
         self.editing_message_index: int | None = None
         self.status = "Siap. Ketik pesan, /file untuk dokumen, atau klik pesan untuk Copy/Edit."
+        self.mouse_enabled = True
         self.streaming = False
         self._stream_task: asyncio.Task[None] | None = None
         self.models: list[str] = []
@@ -73,6 +82,7 @@ class TuiChatApp:
         self._scroll_to_bottom_pending = True
         self.file_browser: FileBrowserState | None = None
         self.file_browser_question_parts: list[str] = []
+        self.expanded_thinking_indices: set[int] = set()
 
         self.input = TextArea(
             height=4,
@@ -107,13 +117,19 @@ class TuiChatApp:
 
         body = VSplit(
             [
-                Window(
-                    self.sidebar_control,
-                    width=D(preferred=30, min=24, max=36),
-                    wrap_lines=False,
-                    style="class:sidebar",
+                ConditionalContainer(
+                    Window(
+                        self.sidebar_control,
+                        width=D(preferred=30, min=24, max=36),
+                        wrap_lines=False,
+                        style="class:sidebar",
+                    ),
+                    filter=Condition(lambda: self.mouse_enabled),
                 ),
-                Window(width=1, char="│", style="class:divider"),
+                ConditionalContainer(
+                    Window(width=1, char="│", style="class:divider"),
+                    filter=Condition(lambda: self.mouse_enabled),
+                ),
                 HSplit(
                     [
                         Window(self.header_control, height=1, style="class:header"),
@@ -134,7 +150,7 @@ class TuiChatApp:
             key_bindings=merge_key_bindings(
                 [self._key_bindings(), load_auto_suggest_bindings()]
             ),
-            mouse_support=True,
+            mouse_support=Condition(lambda: self.mouse_enabled),
             full_screen=True,
             style=self._style(),
         )
@@ -171,11 +187,13 @@ class TuiChatApp:
                 "message.assistant": "#e5e7eb",
                 "message.assistant.dim": "#9ca3af",
                 "message.thinking": "italic #f59e0b",
-                "thinking.border": "#92400e",
+                "thinking.border": "#b45309",
                 "thinking.title": "bold #f59e0b",
-                "thinking.body": "italic #fbbf24",
+                "thinking.body": "italic #fde68a",
+                "thinking.separator": "#92400e",
                 "answer.title": "bold #5eead4",
-                "answer.border": "#1f6f5b",
+                "answer.border": "#0f9474",
+                "answer.separator": "#164e63",
                 "answer.meta": "#9ca3af",
                 "message.selected": "bg:#1f2937 #ffffff bold",
                 "message.meta": "#9ca3af",
@@ -196,6 +214,7 @@ class TuiChatApp:
                 "markdown.code.border": "bg:#111827 #4b5563",
                 "markdown.code.lang": "bg:#1f2937 #5eead4 bold",
                 "markdown.inline_code": "bg:#111827 #fbbf24",
+                "markdown.bold": "bold #e5e7eb",
                 "markdown.table": "bg:#111827 #e5e7eb",
                 "markdown.table.border": "bg:#111827 #4b5563",
                 "markdown.table.header": "bg:#1f2937 #fbbf24 bold",
@@ -242,6 +261,14 @@ class TuiChatApp:
         @kb.add("c-y")
         def _(event) -> None:
             self._copy_selected()
+
+        @kb.add("c-r")
+        def _(event) -> None:
+            self._regenerate_selected()
+
+        @kb.add("f2")
+        def _(event) -> None:
+            self._toggle_mouse_mode()
 
         @kb.add("pageup")
         @kb.add("c-u")
@@ -354,14 +381,11 @@ class TuiChatApp:
             self.app.invalidate()
 
     def _api_messages(self) -> list[ChatMessage]:
-        system_prompt = with_visible_thinking_prompt(
-            self.cfg.system_prompt,
-            self.cfg.show_thinking,
-        )
-        system_prompt += (
-            "\n\nPENTING:\n"
-            "1. Selalu gunakan block code markdown (seperti ```html, ```css, ```javascript, ```bash, atau ```) untuk menulis kode pemrograman, tag HTML/CSS, skrip, command terminal, atau konfigurasi. Jangan menulis kode mentah langsung di luar block code markdown.\n"
-            "2. Gunakan format tabel markdown standar jika menyajikan data berbentuk kolom/tabel."
+        system_prompt = with_response_format_prompt(
+            with_visible_thinking_prompt(
+                self.cfg.system_prompt,
+                self.cfg.show_thinking,
+            )
         )
         messages = [ChatMessage("system", system_prompt)]
         for message in self.session.messages:
@@ -430,6 +454,20 @@ class TuiChatApp:
         if cmd == "/save":
             save_config(self.cfg)
             self.status = "Konfigurasi disimpan."
+            return
+        if cmd in ("/regen", "/regenerate", "/ulang"):
+            self._regenerate_selected()
+            return
+        if cmd in ("/mouse", "/block", "/blok"):
+            value = parts[1].lower() if len(parts) > 1 else "toggle"
+            if value in ("on", "klik", "click", "true", "1"):
+                self._set_mouse_mode(True)
+            elif value in ("off", "block", "blok", "select", "false", "0"):
+                self._set_mouse_mode(False)
+            elif value == "toggle":
+                self._toggle_mouse_mode()
+            else:
+                self.status = "Gunakan: /mouse on untuk klik, /mouse off untuk blok teks."
             return
         if cmd == "/thinking":
             if len(parts) < 2:
@@ -505,7 +543,7 @@ class TuiChatApp:
                 f"{self.cfg.active_model} | {len(self.session.messages)} pesan"
             )
             return
-        self.status = "Command: /file /new /delete /clear /model /provider /system /thinking /status /save /exit"
+        self.status = "Command: /file /new /delete /clear /regen /mouse /model /provider /system /thinking /status /save /exit"
 
     def _touch_session(self, title: str | None = None) -> None:
         self.session.touch(title)
@@ -583,27 +621,56 @@ class TuiChatApp:
         if index < len(self.session.messages):
             self.selected_message_index = index
             role = "pesan Anda" if self.session.messages[index].role == "user" else "jawaban"
-            self.status = f"Memilih {role}. Klik Copy atau Edit."
+            if self.session.messages[index].role == "assistant":
+                self.status = f"Memilih {role}. Copy, Edit, atau Generate ulang."
+            else:
+                self.status = f"Memilih {role}. Copy atau Edit."
             self.app.invalidate()
 
-    def _copy_selected(self) -> None:
+    def _copy_message(self, index: int) -> None:
+        self.selected_message_index = index
+        self._copy_selected()
+
+    def _edit_message(self, index: int) -> None:
+        self.selected_message_index = index
+        self._edit_selected()
+
+    def _regenerate_message(self, index: int) -> None:
+        self.selected_message_index = index
+        self._regenerate_selected()
+
+    def _selected_message(self) -> ChatMessage | None:
         if self.selected_message_index is None:
+            return None
+        if not 0 <= self.selected_message_index < len(self.session.messages):
+            self.selected_message_index = None
+            return None
+        return self.session.messages[self.selected_message_index]
+
+    def _copy_selected(self) -> None:
+        message = self._selected_message()
+        if message is None:
             self.status = "Pilih pesan dulu untuk disalin."
             self.app.invalidate()
             return
-        message = self.session.messages[self.selected_message_index]
-        get_app().clipboard.set_data(ClipboardData(message.content))
-        copied_external = copy_to_system_clipboard(message.content)
+        content = (
+            strip_think_tags(message.content, False)
+            if message.role == "assistant"
+            else message.content
+        )
+        get_app().clipboard.set_data(ClipboardData(content))
+        copied_external = copy_to_system_clipboard(content)
         suffix = "desktop clipboard" if copied_external else "clipboard internal terminal"
-        self.status = f"Tersalin ke {suffix}."
+        label = "Jawaban" if message.role == "assistant" else "Pesan"
+        self.status = f"{label} tersalin ke {suffix}."
         self.app.invalidate()
 
     def _edit_selected(self) -> None:
-        if self.selected_message_index is None:
+        message = self._selected_message()
+        if message is None:
             self.status = "Pilih pesan dulu untuk diedit."
             self.app.invalidate()
             return
-        message = self.session.messages[self.selected_message_index]
         self.editing_message_index = self.selected_message_index
         self.input.text = message.content
         self.input.buffer.cursor_position = len(self.input.text)
@@ -615,6 +682,67 @@ class TuiChatApp:
             )
         else:
             self.status = "Edit jawaban lalu Enter untuk menyimpan teksnya."
+        self.app.invalidate()
+
+    def _regenerate_selected(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum generate ulang."
+            self.app.invalidate()
+            return
+
+        index = self.selected_message_index
+        if index is None:
+            index = self._last_assistant_index()
+
+        if index is None or index >= len(self.session.messages):
+            self.status = "Belum ada jawaban untuk dibuat ulang."
+            self.app.invalidate()
+            return
+
+        message = self.session.messages[index]
+        if message.role == "user":
+            del self.session.messages[index + 1 :]
+            self.selected_message_index = index
+        elif message.role == "assistant":
+            del self.session.messages[index:]
+            self.selected_message_index = index - 1 if index > 0 else None
+        else:
+            self.status = "Pilih pesan user atau jawaban asisten."
+            self.app.invalidate()
+            return
+
+        if not self.session.messages or self.session.messages[-1].role != "user":
+            self.status = "Generate ulang butuh pesan user sebelum jawaban."
+            self.app.invalidate()
+            return
+
+        self.status = "Generate ulang jawaban..."
+        self._request_scroll_to_bottom()
+        self._stream_task = asyncio.create_task(self._stream_reply())
+        self.app.invalidate()
+
+    def _last_assistant_index(self) -> int | None:
+        for index in range(len(self.session.messages) - 1, -1, -1):
+            if self.session.messages[index].role == "assistant":
+                return index
+        return None
+
+    def _toggle_mouse_mode(self) -> None:
+        self._set_mouse_mode(not self.mouse_enabled)
+
+    def _set_mouse_mode(self, enabled: bool) -> None:
+        self.mouse_enabled = enabled
+        if enabled:
+            self.status = "Mode klik aktif. Tombol dan klik pesan bisa dipakai."
+        else:
+            self.status = "Mode blok teks aktif. Drag mouse untuk seleksi teks terminal, F2 untuk kembali."
+        self.app.invalidate()
+
+    def _toggle_thinking(self, index: int) -> None:
+        if index in self.expanded_thinking_indices:
+            self.expanded_thinking_indices.remove(index)
+        else:
+            self.expanded_thinking_indices.add(index)
         self.app.invalidate()
 
     def _cancel_stream(self) -> None:
@@ -654,6 +782,8 @@ class TuiChatApp:
             columns = self.app.output.get_size().columns
         except Exception:
             columns = 100
+        if not self.mouse_enabled:
+            return max(40, columns - 2)
         return max(40, columns - 34)
 
     def _click(self, callback):
@@ -722,6 +852,7 @@ class TuiChatApp:
         title = shorten(self.session.title, width=28, placeholder="...")
         state = "Menjawab" if self.streaming else "Siap"
         thinking = "thinking:on" if self.cfg.show_thinking else "thinking:off"
+        mouse_mode = "klik" if self.mouse_enabled else "blok teks"
         return [
             ("class:header.title", "  DJ Chat Ai "),
             ("class:header.meta", " | "),
@@ -734,13 +865,15 @@ class TuiChatApp:
             ("class:header.value", shorten(self.cfg.active_model, width=24, placeholder="...")),
             ("class:header.meta", " | "),
             ("class:header.value", thinking),
+            ("class:header.meta", " | mouse: "),
+            ("class:header.value", mouse_mode),
         ]
 
     def _render_status(self) -> AnyFormattedText:
         mode = "EDIT" if self.editing_message_index is not None else "CHAT"
         if self.streaming:
             mode = "STREAM"
-        help_text = "Enter kirim | Right/Ctrl-F suggestion | /file baca dokumen | Ctrl-Q keluar"
+        help_text = "F2 blok/klik | Ctrl-Y copy | Ctrl-E edit | Ctrl-R ulang | Ctrl-Q keluar"
         return [
             ("class:status.mode", f" {mode} "),
             ("class:status.text", f" {self.status}"),
@@ -803,6 +936,12 @@ class TuiChatApp:
         return fragments
 
     def _render_chat(self) -> AnyFormattedText:
+        if not self.mouse_enabled and self.file_browser is None:
+            fragments = self._render_selectable_chat()
+            self._chat_line_count = _count_fragment_lines(fragments)
+            self._apply_pending_scroll()
+            return fragments
+
         if self.file_browser is not None:
             lines = render_browser_lines(self.file_browser, limit=40)
             fragments = [("", "\n")]
@@ -851,7 +990,7 @@ class TuiChatApp:
             fragments.append((label_style, f"    {label_icon} {label}"))
             if self.editing_message_index == index:
                 fragments.append(("class:message.label.edit", "  edit"))
-            
+
             handler = self._click(lambda i=index: self._select_message(i))
             # Determine if we are waiting for the assistant's reply for this message
             is_waiting_reply = self.streaming and index == len(self.session.messages) - 1
@@ -865,17 +1004,19 @@ class TuiChatApp:
                             content_width,
                         )
                     )
-
-
                 else:
+                    toggle_handler = self._click(lambda i=index: self._toggle_thinking(i))
                     fragments.extend(
                         _render_assistant_sections(
                             text or "...",
                             self.cfg.show_thinking,
                             handler,
                             content_width,
+                            is_expanded=(index in self.expanded_thinking_indices),
+                            toggle_handler=toggle_handler,
                         )
                     )
+                    fragments.extend(self._render_message_actions(index))
 
             else:
                 fragments.extend(_render_plain_message(text or "...", style, handler, content_width))
@@ -889,6 +1030,53 @@ class TuiChatApp:
         """Return a simple spinner text for the thinking indicator."""
         return "Asisten sedang menyusun jawaban..."
 
+    def _render_selectable_chat(self) -> list[tuple]:
+        width = max(24, self._chat_width() - 2)
+        fragments: list[tuple] = [("class:message.meta", "\nMode blok teks. F2 kembali.\n\n")]
+
+        if not self.session.messages:
+            fragments.append(("class:welcome.text", "  Belum ada pesan. Tekan F2 untuk kembali lalu mulai chat.\n"))
+            return fragments
+
+        for index, message in enumerate(self.session.messages):
+            if index > 0:
+                fragments.append(("", "\n"))
+            label = "Anda" if message.role == "user" else "Asisten"
+            label_style = (
+                "class:message.label.user"
+                if message.role == "user"
+                else "class:message.label.assistant"
+            )
+            fragments.append((label_style, f"{label}:\n"))
+            content = (
+                strip_think_tags(message.content, self.cfg.show_thinking)
+                if message.role == "assistant"
+                else message.content
+            )
+            fragments.extend(
+                _render_selectable_text(content or "...", "class:message.assistant", width)
+            )
+
+        fragments.append(("", "\n"))
+        return fragments
+
+    def _render_message_actions(self, index: int) -> list[tuple]:
+        selected = index == self.selected_message_index
+        action_style = "class:button.hot" if selected else "class:button"
+        meta = " aktif" if selected else ""
+        return [
+            ("", "    "),
+            (action_style, " [Copy] ", self._click(lambda i=index: self._copy_message(i))),
+            ("", " "),
+            (action_style, " [Edit] ", self._click(lambda i=index: self._edit_message(i))),
+            ("", " "),
+            (
+                action_style,
+                " [Generate ulang] ",
+                self._click(lambda i=index: self._regenerate_message(i)),
+            ),
+            ("class:message.meta", f" jawaban{meta}\n"),
+        ]
 
     def _render_welcome(self) -> list[tuple]:
         width = self._chat_width()
@@ -904,6 +1092,8 @@ class TuiChatApp:
             ("Ctrl-N", "chat baru"),
             ("Ctrl-Y", "copy pesan terpilih"),
             ("Ctrl-E", "edit pesan terpilih"),
+            ("Ctrl-R", "generate ulang jawaban"),
+            ("F2", "toggle blok teks / klik"),
             ("PgUp/PgDn", "scroll chat"),
             ("Ctrl-Q", "keluar"),
         ]
@@ -914,6 +1104,8 @@ class TuiChatApp:
             ("/provider ollama|localai|openai|gemini", "ganti backend"),
             ("/apikey <key>", "set api key"),
             ("/clear", "hapus chat saat ini"),
+            ("/regen", "generate ulang jawaban"),
+            ("/mouse on|off", "klik tombol / blok teks"),
             ("/thinking on|off", "tampil proses berpikir"),
             ("/save", "simpan konfigurasi"),
         ]
@@ -951,12 +1143,23 @@ class TuiChatApp:
         return fragments
 
     def _render_toolbar(self) -> AnyFormattedText:
+        if not self.mouse_enabled:
+            return [
+                ("class:toolbar", " "),
+                ("class:button.hot", " MODE BLOK TEKS "),
+                ("class:message.meta", " drag seleksi | F2 mode klik"),
+            ]
+
         return [
             ("class:button.hot", " [Copy] ", self._click(self._copy_selected)),
             ("", " "),
             ("class:button.hot", " [Edit] ", self._click(self._edit_selected)),
             ("", " "),
+            ("class:button.hot", " [Generate ulang] ", self._click(self._regenerate_selected)),
+            ("", " "),
             ("class:button.hot", " [File] ", self._click(self._pick_file_from_toolbar)),
+            ("", " "),
+            ("class:button", " [Blok teks] ", self._click(lambda: self._set_mouse_mode(False))),
             ("", " "),
             ("class:button", " [New] ", self._click(self._new_session)),
             ("", " "),
@@ -964,7 +1167,7 @@ class TuiChatApp:
             ("", "   "),
             (
                 "class:message.meta",
-                "klik pesan untuk memilih | /file buka picker | /models refresh model",
+                "F2 blok teks | /mouse on klik | /regen ulang",
             ),
         ]
 
@@ -1026,7 +1229,7 @@ def _center_help_table(
 
 
 _TABLE_SEPARATOR = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?\s*$")
-_INLINE_CODE = re.compile(r"`([^`]+)`")
+_INLINE_MARKDOWN = re.compile(r"`([^`]+)`|(\*\*|__)(.+?)\2")
 
 
 def _render_plain_message(text: str, style: str, handler, width: int) -> list[tuple]:
@@ -1034,6 +1237,15 @@ def _render_plain_message(text: str, style: str, handler, width: int) -> list[tu
     for raw_line in text.splitlines() or [""]:
         for line in _wrap_visual_line(raw_line, width):
             fragments.append((style, f"    {line}\n", handler))
+    return fragments
+
+
+def _render_selectable_text(text: str, style: str, width: int) -> list[tuple]:
+    fragments: list[tuple] = []
+    for raw_line in text.splitlines() or [""]:
+        clean_line = _strip_inline_markdown(raw_line)
+        for line in _wrap_visual_line(clean_line, width):
+            fragments.append((style, f"{line}\n"))
     return fragments
 
 
@@ -1077,6 +1289,8 @@ def _render_assistant_sections(
     show_thinking: bool,
     handler,
     width: int,
+    is_expanded: bool = False,
+    toggle_handler = None,
 ) -> list[tuple]:
     if not show_thinking:
         answer = strip_think_tags(text, False)
@@ -1092,13 +1306,20 @@ def _render_assistant_sections(
         if not content:
             continue
         if kind == "thinking":
+            content = sanitize_visible_thinking(content)
+            if not content:
+                continue
             has_thinking = True
-            fragments.extend(_render_thinking_block(content, handler, width))
+            fragments.extend(_render_thinking_block(content, handler, width, is_expanded, toggle_handler))
         else:
-            answer_parts.append(content)
+            content = sanitize_assistant_output(content)
+            if content:
+                answer_parts.append(content)
 
     answer = "\n\n".join(answer_parts).strip()
     if answer:
+        if has_thinking:
+            fragments.extend(_render_section_divider(width, handler))
         fragments.extend(_render_answer_block(answer, handler, width, title="Jawaban utama" if has_thinking else "Jawaban"))
 
     if not fragments:
@@ -1114,25 +1335,56 @@ def _render_answer_block(
     title: str = "Jawaban",
 ) -> list[tuple]:
     inner_width = max(24, width - 8)
-    title_text = f" {title} "
-    rule_width = max(0, inner_width - len(title_text) - 2)
+    icon = "💡 " if title == "Jawaban utama" else ""
+    title_text = f" {icon}{title} "
+    title_len = len(title_text)
+    rule_width = max(0, inner_width - title_len - 2)
     fragments: list[tuple] = [("", "\n")]
-    fragments.append(("class:answer.border", "    ┌─", handler))
-    fragments.append(("class:answer.title", title_text, handler))
-    fragments.append(("class:answer.border", f"{'─' * rule_width}┐\n", handler))
+    fragments.append(("class:answer.border", "    ╔═", handler))
+    fragments.append(("class:answer.title",  title_text, handler))
+    fragments.append(("class:answer.border", f"{'═' * rule_width}╗\n", handler))
     fragments.extend(_render_markdown_message(text, handler, inner_width))
-    fragments.append(("class:answer.border", f"    └─{'─' * inner_width}─┘\n", handler))
+    fragments.append(("class:answer.border", f"    ╚═{'═' * inner_width}═╝\n", handler))
     return fragments
 
 
-def _render_thinking_block(text: str, handler, width: int) -> list[tuple]:
+def _render_section_divider(width: int, handler) -> list[tuple]:
+    """Render a visual separator between thinking and answer blocks."""
     inner_width = max(20, width - 8)
+    sep_char = "╌"
+    label = " ▼ "
+    left_pad = max(0, (inner_width - len(label)) // 2)
+    right_pad = max(0, inner_width - len(label) - left_pad)
+    fragments: list[tuple] = [
+        ("class:thinking.separator", f"    {sep_char * (left_pad + 2)}", handler),
+        ("class:answer.title",       label,                               handler),
+        ("class:answer.separator",   f"{sep_char * (right_pad + 2)}\n",  handler),
+    ]
+    return fragments
+
+
+def _render_thinking_block(text: str, handler, width: int, is_expanded: bool = False, toggle_handler = None) -> list[tuple]:
+    inner_width = max(20, width - 8)
+    click_target = toggle_handler or handler
+
+    if not is_expanded:
+        title_label = " ▶ 🧠 Proses berpikir "
+        title_len = len(" ▶ 🧠 Proses berpikir ")  # ambiguous width workaround
+        right_dashes = max(0, inner_width - title_len)
+        fragments: list[tuple] = [("", "\n")]
+        fragments.append(("class:thinking.border", "    ╔═", click_target))
+        fragments.append(("class:thinking.title",  title_label, click_target))
+        fragments.append(("class:thinking.border", f"{'═' * right_dashes}╗\n", click_target))
+        fragments.append(("class:thinking.border", f"    ╚═{'═' * inner_width}═╝\n", click_target))
+        return fragments
+
+    title_label = " ▼ 🧠 Proses berpikir "
+    title_len = len(" ▼ 🧠 Proses berpikir ")  # ambiguous width workaround
+    right_dashes = max(0, inner_width - title_len)
     fragments: list[tuple] = [("", "\n")]
-    fragments.append(("class:thinking.border", "    ┌─", handler))
-    fragments.append(("class:thinking.title", " Proses berpikir ", handler))
-    fragments.append(
-        ("class:thinking.border", f"{'─' * max(inner_width - 17, 0)}┐\n", handler)
-    )
+    fragments.append(("class:thinking.border", "    ╔═", click_target))
+    fragments.append(("class:thinking.title",  title_label, click_target))
+    fragments.append(("class:thinking.border", f"{'═' * right_dashes}╗\n", click_target))
 
     lines: list[str] = []
     for raw_line in text.splitlines() or [text]:
@@ -1140,17 +1392,27 @@ def _render_thinking_block(text: str, handler, width: int) -> list[tuple]:
         lines.extend(wrapped)
 
     for line in lines:
-        fragments.append(("class:thinking.border", "    │ ", handler))
+        fragments.append(("class:thinking.border", "    ║ ", handler))
         fragments.append(("class:thinking.body", f"{line:<{inner_width}}", handler))
-        fragments.append(("class:thinking.border", " │\n", handler))
+        fragments.append(("class:thinking.border", " ║\n", handler))
 
-    fragments.append(("class:thinking.border", f"    └─{'─' * inner_width}─┘\n", handler))
+    fragments.append(("class:thinking.border", f"    ╚═{'═' * inner_width}═╝\n", click_target))
     return fragments
 
 
 def _render_code_block(lines: list[str], language: str, handler, max_width: int = 120) -> list[tuple]:
     usable_width = max(20, max_width - 6)
-    label = f" {language or 'code'} "
+    
+    label_text = language
+    if not language:
+        # Heuristik sederhana untuk mendeteksi lirik lagu
+        content_lower = "\n".join(lines[:5]).lower()
+        if any(w in content_lower for w in ["judul lagu", "intro", "verse", "chorus", "reff", "kunci dasar"]):
+            label_text = "lirik"
+        else:
+            label_text = "teks"
+            
+    label = f" {label_text} "
 
     # Wrap baris yang terlalu panjang
     wrapped_lines: list[str] = []
@@ -1191,29 +1453,39 @@ def _render_table(lines: list[str], handler, width: int) -> list[tuple]:
         return _render_markdown_line(lines[0], handler, width)
 
     header = rows[0]
-    body = rows[2:] if _is_table_separator_row(rows[1]) else rows[1:]
+    separator = rows[1] if _is_table_separator_row(rows[1]) else []
+    body = rows[2:] if separator else rows[1:]
     column_count = max(len(row) for row in [header, *body])
-    header = _pad_row(header, column_count)
-    body = [_pad_row(row, column_count) for row in body]
+    header = _clean_table_row(_pad_row(header, column_count))
+    separator = _pad_row(separator, column_count) if separator else []
+    body = [_clean_table_row(_pad_row(row, column_count)) for row in body]
     widths = [
         max(len(row[column]) for row in [header, *body])
         for column in range(column_count)
     ]
-    widths = _fit_table_width(widths, max(20, width - 6))
-    header = [_truncate_cell(cell, widths[index]) for index, cell in enumerate(header)]
-    body = [
-        [_truncate_cell(cell, widths[index]) for index, cell in enumerate(row)]
-        for row in body
-    ]
+    widths = _fit_table_width(widths, max(20, width - 1))
+    alignments = [_table_alignment(cell) for cell in separator]
+    if not alignments:
+        alignments = ["left"] * column_count
 
     fragments: list[tuple] = []
     fragments.extend(_render_table_border("┌", "┬", "┐", widths, handler))
-    fragments.extend(_render_table_row(header, widths, "class:markdown.table.header", handler))
+    fragments.extend(
+        _render_table_row(
+            header, widths, alignments, "class:markdown.table.header", handler
+        )
+    )
     fragments.extend(_render_table_border("├", "┼", "┤", widths, handler))
     for row in body:
-        fragments.extend(_render_table_row(row, widths, "class:markdown.table", handler))
+        fragments.extend(
+            _render_table_row(row, widths, alignments, "class:markdown.table", handler)
+        )
     fragments.extend(_render_table_border("└", "┴", "┘", widths, handler))
     return fragments
+
+
+def _clean_table_row(row: list[str]) -> list[str]:
+    return [_strip_inline_markdown(cell) for cell in row]
 
 
 def _render_table_border(
@@ -1227,16 +1499,32 @@ def _render_table_border(
 
 
 def _render_table_row(
-    row: list[str], widths: list[int], style: str, handler
+    row: list[str],
+    widths: list[int],
+    alignments: list[str],
+    style: str,
+    handler,
 ) -> list[tuple]:
-    fragments: list[tuple] = [
-        ("class:answer.border", "    │ ", handler),
-        ("class:markdown.table.border", "│", handler)
+    wrapped_cells = [
+        _wrap_visual_line(cell, width) for cell, width in zip(row, widths)
     ]
-    for cell, width in zip(row, widths):
-        fragments.append((style, f" {cell:<{width}} ", handler))
-        fragments.append(("class:markdown.table.border", "│", handler))
-    fragments.append(("", "\n", handler))
+    row_height = max(len(cell_lines) for cell_lines in wrapped_cells)
+    fragments: list[tuple] = []
+
+    for line_index in range(row_height):
+        fragments.extend(
+            [
+                ("class:answer.border", "    │ ", handler),
+                ("class:markdown.table.border", "│", handler),
+            ]
+        )
+        for cell_lines, width, alignment in zip(wrapped_cells, widths, alignments):
+            cell = cell_lines[line_index] if line_index < len(cell_lines) else ""
+            fragments.append(
+                (style, f" {_align_table_cell(cell, width, alignment)} ", handler)
+            )
+            fragments.append(("class:markdown.table.border", "│", handler))
+        fragments.append(("", "\n", handler))
     return fragments
 
 
@@ -1282,7 +1570,7 @@ def _render_markdown_line(line: str, handler, width: int) -> list[tuple]:
             fragments.append(("class:markdown.list.marker", "• ", handler))
         elif line_prefix[6:]:
             fragments.append((style, line_prefix[6:], handler))
-        fragments.extend(_render_inline_code(visual_line, style, handler))
+        fragments.extend(_render_inline_markdown(visual_line, style, handler))
         fragments.append(("", "\n", handler))
     return fragments
 
@@ -1290,20 +1578,30 @@ def _render_markdown_line(line: str, handler, width: int) -> list[tuple]:
 def _fit_table_width(widths: list[int], max_width: int) -> list[int]:
     if not widths:
         return widths
-    available = max(8 * len(widths), max_width - (3 * len(widths)) - 1)
-    fitted = [min(max(width, 4), 28) for width in widths]
-    while sum(fitted) > available and max(fitted) > 8:
+    border_width = (3 * len(widths)) + 1
+    available = max(6 * len(widths), max_width - border_width)
+    fitted = [min(max(width, 4), 32) for width in widths]
+    while sum(fitted) > available and max(fitted) > 6:
         largest = max(range(len(fitted)), key=fitted.__getitem__)
         fitted[largest] -= 1
     return fitted
 
 
-def _truncate_cell(text: str, width: int) -> str:
-    if len(text) <= width:
-        return text
-    if width <= 1:
-        return text[:width]
-    return text[: width - 1] + "…"
+def _table_alignment(separator_cell: str) -> str:
+    cell = separator_cell.strip()
+    if cell.startswith(":") and cell.endswith(":"):
+        return "center"
+    if cell.endswith(":"):
+        return "right"
+    return "left"
+
+
+def _align_table_cell(text: str, width: int, alignment: str) -> str:
+    if alignment == "right":
+        return f"{text:>{width}}"
+    if alignment == "center":
+        return f"{text:^{width}}"
+    return f"{text:<{width}}"
 
 
 def _wrap_visual_line(text: str, width: int) -> list[str]:
@@ -1338,17 +1636,29 @@ def _wrap_visual_line(text: str, width: int) -> list[str]:
     return chunks
 
 
-def _render_inline_code(text: str, base_style: str, handler) -> list[tuple]:
+def _render_inline_markdown(text: str, base_style: str, handler) -> list[tuple]:
     fragments: list[tuple] = []
     position = 0
-    for match in _INLINE_CODE.finditer(text):
+    for match in _INLINE_MARKDOWN.finditer(text):
         if match.start() > position:
             fragments.append((base_style, text[position : match.start()], handler))
-        fragments.append(("class:markdown.inline_code", f" {match.group(1)} ", handler))
+        if match.group(1) is not None:
+            fragments.append(("class:markdown.inline_code", f" {match.group(1)} ", handler))
+        else:
+            fragments.append(("class:markdown.bold", match.group(3), handler))
         position = match.end()
     if position < len(text):
         fragments.append((base_style, text[position:], handler))
     return fragments
+
+
+def _strip_inline_markdown(text: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        if match.group(1) is not None:
+            return match.group(1)
+        return match.group(3)
+
+    return _INLINE_MARKDOWN.sub(replace, text)
 
 
 def _is_table_start(lines: list[str], index: int) -> bool:

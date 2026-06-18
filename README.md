@@ -1,18 +1,18 @@
 # DJ Chat Ai
 
-Chat AI di terminal dengan tampilan berwarna (Rich), mendukung **Ollama** dan **LocalAI**.
+![Tampilan DJ Chat Ai](./Screenshot_2.png)
+![Tampilan DJ Chat Ai 2](./Screenshot_1.png)
 
-## Fitur
+Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **Ollama**, dan **LocalAI**.
 
-- UI terminal dengan banner, panel, dan render Markdown
-- Mode full-screen yang lebih ramah: header status, sidebar history/model, toolbar aksi, copy/edit dengan klik
-- Streaming respons dari model lokal
-- Baca file lokal sebagai konteks chat (`/file`, `ask --file`)
-- Auto suggestion di input chat untuk command dan riwayat prompt
-- Ganti provider/model tanpa restart (`/provider`, `/model`)
-- Riwayat chat persisten di `~/.config/ai-chat-cli/sessions`
-- Riwayat input (prompt-toolkit)
-- Konfigurasi persisten di `~/.config/ai-chat-cli/config.json`
+## Fitur Utama
+
+- **UI Terminal Modern:** Dilengkapi header status, sidebar (history/model), toolbar aksi interaktif, serta kemampuan copy/edit dengan klik mouse.
+- **Proses Berpikir (Thinking) Otomatis:** Menampilkan proses alur berpikir (reasoning) model dengan fitur *collapse/expand* yang rapi.
+- **Smart Markdown Labeling:** Mendeteksi isi kotak markdown secara otomatis (misal: otomatis melabeli kotak sebagai "lirik" jika mendeteksi teks lagu).
+- **Konteks Dokumen (RAG Lokal):** Baca file lokal (`.txt`, `.pdf`, `.docx`, gambar OCR) untuk dijadikan konteks obrolan lewat perintah `/file`.
+- **Ganti Model On-the-fly:** Ubah provider atau model langsung di dalam chat tanpa perlu *restart* (`/provider`, `/model`).
+- **Penyimpanan Otomatis:** Riwayat chat (`~/.config/ai-chat-cli/sessions`) dan konfigurasi tersimpan permanen.
 
 ## Instalasi
 
@@ -143,7 +143,28 @@ source .venv/bin/activate
 pip install --no-deps --no-build-isolation -e .
 ```
 
-## Penggunaan
+## Tutorial Singkat Penggunaan
+
+Berikut adalah cara memanfaatkan beberapa fitur unggulan DJ Chat Ai:
+
+### 1. Fitur "Proses Berpikir" (Reasoning)
+Saat menggunakan model yang mendukung proses berpikir (seperti `gemini-2.5-flash-thinking` atau model *reasoning* Ollama), terminal akan menampilkan blok khusus bernama **🧠 Proses berpikir**.
+- Secara bawaan, blok ini akan disembunyikan (*collapsed*) agar chat terlihat rapi.
+- Jika Anda ingin membaca proses berpikir model, pastikan mode mouse menyala (`F2`), lalu klik judul **▶ 🧠 Proses berpikir** untuk membukanya (*expand*).
+- Anda dapat menyalakan/mematikan fitur ini menggunakan perintah `/thinking on` atau `/thinking off` langsung di kolom input.
+
+### 2. Berinteraksi dengan Mouse
+Aplikasi ini sudah sepenuhnya mendukung kontrol *Mouse* di terminal!
+- **Klik Kiri** pada daftar obrolan di sisi kiri (Sidebar) untuk berpindah riwayat obrolan secara instan.
+- **Klik Kiri** pada model di sisi kiri untuk mengganti model yang sedang aktif secara instan.
+- **F2**: Menyalakan mode "Blok teks" jika Anda ingin menyeleksi (mem-blok) teks dengan mouse untuk di-copy ke luar terminal.
+
+### 3. Smart Code Block & LaTeX
+Aplikasi secara cerdas mem-parsing hasil teks model Anda:
+- Format matematika LaTeX seperti tanda panah (`$\rightarrow$`) akan diubah langsung menjadi simbol rapi (`→`).
+- Kotak (blok) hasil generasi AI akan secara dinamis diberi nama. Contohnya, jika Anda meminta AI membuat lagu, kotaknya tidak lagi bernama "code", tapi otomatis menyesuaikan menjadi **"lirik"**.
+
+## Daftar Perintah Bawaan
 
 ```bash
 # Default (Ollama) — mode chat interaktif

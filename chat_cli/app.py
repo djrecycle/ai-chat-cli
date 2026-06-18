@@ -46,14 +46,11 @@ class ChatApp:
         self.provider = self._make_provider()
 
     def _api_messages(self) -> list[ChatMessage]:
-        system_prompt = ui.with_visible_thinking_prompt(
-            self.cfg.system_prompt,
-            self.cfg.show_thinking,
-        )
-        system_prompt += (
-            "\n\nPENTING:\n"
-            "1. Selalu gunakan block code markdown (seperti ```html, ```css, ```javascript, ```bash, atau ```) untuk menulis kode pemrograman, tag HTML/CSS, skrip, command terminal, atau konfigurasi. Jangan menulis kode mentah langsung di luar block code markdown.\n"
-            "2. Gunakan format tabel markdown standar jika menyajikan data berbentuk kolom/tabel."
+        system_prompt = ui.with_response_format_prompt(
+            ui.with_visible_thinking_prompt(
+                self.cfg.system_prompt,
+                self.cfg.show_thinking,
+            )
         )
         msgs = [ChatMessage("system", system_prompt)]
         msgs.extend(
@@ -251,7 +248,7 @@ class ChatApp:
                     return True
             save_config(self.cfg)
             state = "ditampilkan" if self.cfg.show_thinking else "disembunyikan"
-            ui.show_success(f"Proses berpikir {state}.")
+            ui.show_success(f"Kerangka berpikir {state}.")
             return True
 
         if cmd == "/status":

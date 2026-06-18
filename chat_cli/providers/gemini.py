@@ -82,6 +82,7 @@ class GeminiProvider(ChatProvider):
             headers={"Content-Type": "application/json"},
         )
 
+        in_thought = False
         with urlopen(req, timeout=None) as resp:
             for raw in resp:
                 line = raw.decode().strip()
@@ -101,8 +102,21 @@ class GeminiProvider(ChatProvider):
                 content_parts = candidates[0].get("content", {}).get("parts", [])
                 for part in content_parts:
                     text = part.get("text", "")
-                    if text:
-                        yield text
+                    if not text:
+                        continue
+                    
+                    is_thought = part.get("thought", False)
+                    if is_thought and not in_thought:
+                        yield "<think>\n"
+                        in_thought = True
+                    elif not is_thought and in_thought:
+                        yield "\n</think>\n"
+                        in_thought = False
+                        
+                    yield text
+
+        if in_thought:
+            yield "\n</think>\n"
 
     async def chat_stream(
         self,
