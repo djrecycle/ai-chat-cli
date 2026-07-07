@@ -49,6 +49,51 @@ source .venv/bin/activate
 Script `setup-venv.sh` akan membuat ulang `.venv`, memasang dependency utama,
 dan memasang package project dalam mode editable.
 
+### Instalasi via .deb package (Debian/Ubuntu)
+
+Cara paling mudah untuk menginstall di sistem Debian/Ubuntu — tidak perlu setup venv manual.
+
+#### Dari release
+
+Download file `.deb` dari halaman [Releases](https://github.com/djrecycle/ai-chat-cli/releases), lalu install:
+
+```bash
+sudo dpkg -i aichat_1.0.0_all.deb
+```
+
+Setelah terinstall, langsung jalankan:
+
+```bash
+aichat
+```
+
+#### Build .deb sendiri dari source
+
+```bash
+git clone https://github.com/djrecycle/ai-chat-cli.git
+cd ai-chat-cli
+
+# Build package (butuh python3 & pip3)
+chmod +x build-deb.sh
+./build-deb.sh
+
+# Install hasil build
+sudo dpkg -i dist/aichat_1.0.0_all.deb
+```
+
+Untuk menyertakan fitur dokumen (Pillow, pypdf, pytesseract, python-docx):
+
+```bash
+./build-deb.sh --docs
+```
+
+#### Uninstall
+
+```bash
+sudo dpkg -r aichat          # hapus package
+sudo dpkg -P aichat          # hapus package + konfigurasi
+```
+
 ### Instalasi manual
 
 Gunakan cara ini jika ingin mengontrol langkah instalasi sendiri:
