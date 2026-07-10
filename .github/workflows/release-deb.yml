@@ -55,11 +55,15 @@ jobs:
           deb_path="$(ls dist/*.deb | grep -v -- '-docs\.deb$' | head -n 1)"
           deb_name="$(basename "$deb_path")"
           docs_name="$(basename "$docs_release_path")"
+          standard_label="Linux Debian package (standard)"
+          docs_label="Linux Debian package (docs)"
 
           echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
           echo "deb_name=$deb_name" >> "$GITHUB_OUTPUT"
           echo "docs_path=$docs_release_path" >> "$GITHUB_OUTPUT"
           echo "docs_name=$docs_name" >> "$GITHUB_OUTPUT"
+          echo "standard_label=$standard_label" >> "$GITHUB_OUTPUT"
+          echo "docs_label=$docs_label" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release metadata
         id: meta
@@ -125,11 +129,11 @@ jobs:
               [
                   marker_start,
                   "## Debian Packages",
-                  "",
-                  f"- `{standard}`",
+                "",
+                  f"- `{standard}` — Linux Debian package (standard)",
                   "  Paket standar untuk chat terminal utama.",
                   "",
-                  f"- `{docs}`",
+                  f"- `{docs}` — Linux Debian package (docs)",
                   "  Paket standar + dependency fitur dokumen (`/file` untuk PDF, DOCX, dan OCR gambar).",
                   "",
                   "Catatan: varian `-docs` tetap lebih optimal jika `tesseract-ocr` tersedia di sistem untuk OCR gambar.",
@@ -157,6 +161,6 @@ jobs:
         run: |
           gh release upload \
             "${{ steps.meta.outputs.tag }}" \
-            "${{ steps.build.outputs.deb_path }}" \
-            "${{ steps.build.outputs.docs_path }}" \
+            "${{ steps.build.outputs.deb_path }}#${{ steps.build.outputs.standard_label }}" \
+            "${{ steps.build.outputs.docs_path }}#${{ steps.build.outputs.docs_label }}" \
             --clobber
