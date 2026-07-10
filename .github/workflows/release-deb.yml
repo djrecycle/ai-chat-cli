@@ -96,6 +96,61 @@ jobs:
 
           gh release create "$tag" --verify-tag --generate-notes
 
+      - name: Update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+          existing_body="$(gh release view "$tag" --json body --jq .body)"
+
+          EXISTING_BODY="$existing_body" \
+          STANDARD_DEB="${{ steps.build.outputs.deb_name }}" \
+          DOCS_DEB="${{ steps.build.outputs.docs_name }}" \
+          python - <<'PY' > /tmp/release-notes.md
+          import os
+
+          marker_start = "<!-- debian-assets-start -->"
+          marker_end = "<!-- debian-assets-end -->"
+          body = os.environ.get("EXISTING_BODY", "")
+          standard = os.environ["STANDARD_DEB"]
+          docs = os.environ["DOCS_DEB"]
+
+          if marker_start in body and marker_end in body:
+              before, rest = body.split(marker_start, 1)
+              _, after = rest.split(marker_end, 1)
+              body = (before + after).strip()
+
+          asset_notes = "\n".join(
+              [
+                  marker_start,
+                  "## Debian Packages",
+                  "",
+                  f"- `{standard}`",
+                  "  Paket standar untuk chat terminal utama.",
+                  "",
+                  f"- `{docs}`",
+                  "  Paket standar + dependency fitur dokumen (`/file` untuk PDF, DOCX, dan OCR gambar).",
+                  "",
+                  "Catatan: varian `-docs` tetap lebih optimal jika `tesseract-ocr` tersedia di sistem untuk OCR gambar.",
+                  marker_end,
+              ]
+          ).strip()
+
+          final_parts = [asset_notes]
+          if body.strip():
+              final_parts.append(body.strip())
+          print("\n\n".join(final_parts).strip())
+          PY
+
+      - name: Apply GitHub Release notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit \
+            "${{ steps.meta.outputs.tag }}" \
+            --notes-file /tmp/release-notes.md
+
       - name: Upload .deb to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

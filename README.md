@@ -67,6 +67,15 @@ dipublish.
 Workflow ini mengunggah dua asset: paket standar dan varian `-docs` yang
 menyertakan dependency fitur dokumen.
 
+Perbedaan asset release:
+
+- `aichat_<versi>_all.deb`
+  Paket standar untuk chat terminal utama.
+- `aichat_<versi>_all-docs.deb`
+  Paket standar + dependency fitur dokumen seperti PDF, DOCX, dan OCR gambar.
+- Catatan OCR
+  Varian `-docs` tetap lebih optimal jika `tesseract-ocr` terpasang di sistem.
+
 Setelah terinstall, langsung jalankan:
 
 ```bash
