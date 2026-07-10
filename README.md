@@ -64,6 +64,8 @@ sudo dpkg -i aichat_1.0.0_all.deb
 Repo ini sekarang juga punya workflow GitHub Actions yang akan build dan
 upload file `.deb` otomatis saat tag didorong ke GitHub atau saat release
 dipublish.
+Workflow ini mengunggah dua asset: paket standar dan varian `-docs` yang
+menyertakan dependency fitur dokumen.
 
 Setelah terinstall, langsung jalankan:
 

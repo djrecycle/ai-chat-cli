@@ -42,8 +42,24 @@ jobs:
           sudo apt-get install -y dpkg-dev
           python -m pip install --upgrade pip
 
-      - name: Build .deb package
-        run: ./build-deb.sh
+      - name: Build .deb packages
+        id: build
+        shell: bash
+        run: |
+          ./build-deb.sh --docs
+          docs_path="$(ls dist/*.deb | head -n 1)"
+          docs_release_path="${docs_path%.deb}-docs.deb"
+          mv "$docs_path" "$docs_release_path"
+
+          ./build-deb.sh
+          deb_path="$(ls dist/*.deb | grep -v -- '-docs\.deb$' | head -n 1)"
+          deb_name="$(basename "$deb_path")"
+          docs_name="$(basename "$docs_release_path")"
+
+          echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
+          echo "deb_name=$deb_name" >> "$GITHUB_OUTPUT"
+          echo "docs_path=$docs_release_path" >> "$GITHUB_OUTPUT"
+          echo "docs_name=$docs_name" >> "$GITHUB_OUTPUT"
 
       - name: Resolve release metadata
         id: meta
@@ -57,18 +73,15 @@ jobs:
             tag="${GITHUB_REF_NAME}"
           fi
 
-          deb_path="$(ls dist/*.deb | head -n 1)"
-          deb_name="$(basename "$deb_path")"
-
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
-          echo "deb_name=$deb_name" >> "$GITHUB_OUTPUT"
 
-      - name: Upload workflow artifact
+      - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ steps.meta.outputs.deb_name }}
-          path: ${{ steps.meta.outputs.deb_path }}
+          name: debian-release-assets
+          path: |
+            ${{ steps.build.outputs.deb_path }}
+            ${{ steps.build.outputs.docs_path }}
 
       - name: Ensure GitHub Release exists
         env:
@@ -89,5 +102,6 @@ jobs:
         run: |
           gh release upload \
             "${{ steps.meta.outputs.tag }}" \
-            "${{ steps.meta.outputs.deb_path }}" \
+            "${{ steps.build.outputs.deb_path }}" \
+            "${{ steps.build.outputs.docs_path }}" \
             --clobber
