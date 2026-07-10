@@ -10,6 +10,8 @@ from typing import Any
 
 CONFIG_DIR = Path.home() / ".config" / "ai-chat-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
+SUPPORTED_PROVIDERS = ("ollama", "localai", "openai", "gemini", "deepseek")
+PROVIDER_HELP_TEXT = "|".join(SUPPORTED_PROVIDERS)
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "provider": "ollama",
@@ -32,10 +34,16 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": "gemini-1.5-flash",
         "api_key": "",
     },
+    "deepseek": {
+        "base_url": "https://api.deepseek.com",
+        "model": "deepseek-chat",
+        "api_key": "",
+    },
     "system_prompt": "Kamu adalah asisten AI yang ramah dan membantu. Jawab dengan jelas dalam bahasa yang dipakai pengguna.",
     "temperature": 0.7,
     "show_thinking": True,
 }
+DEFAULT_SYSTEM_PROMPT = str(DEFAULT_CONFIG["system_prompt"])
 
 
 @dataclass
@@ -52,12 +60,17 @@ class AppConfig:
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta"
     gemini_model: str = "gemini-1.5-flash"
     gemini_api_key: str = ""
-    system_prompt: str = DEFAULT_CONFIG["system_prompt"]
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-chat"
+    deepseek_api_key: str = ""
+    system_prompt: str = DEFAULT_SYSTEM_PROMPT
     temperature: float = 0.7
     show_thinking: bool = True
 
     @property
     def active_base_url(self) -> str:
+        if self.provider == "deepseek":
+            return self.deepseek_base_url.rstrip("/")
         if self.provider == "gemini":
             return self.gemini_base_url.rstrip("/")
         if self.provider == "openai":
@@ -68,6 +81,8 @@ class AppConfig:
 
     @property
     def active_model(self) -> str:
+        if self.provider == "deepseek":
+            return self.deepseek_model
         if self.provider == "gemini":
             return self.gemini_model
         if self.provider == "openai":
@@ -77,7 +92,9 @@ class AppConfig:
         return self.ollama_model
 
     def set_model(self, model: str) -> None:
-        if self.provider == "gemini":
+        if self.provider == "deepseek":
+            self.deepseek_model = model
+        elif self.provider == "gemini":
             self.gemini_model = model
         elif self.provider == "openai":
             self.openai_model = model
@@ -87,7 +104,7 @@ class AppConfig:
             self.ollama_model = model
 
     def set_provider(self, provider: str) -> None:
-        if provider not in ("ollama", "localai", "openai", "gemini"):
+        if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(f"Provider tidak dikenal: {provider}")
         self.provider = provider
 
@@ -108,6 +125,7 @@ def load_config() -> AppConfig:
     localai = data.get("localai") or {}
     openai = data.get("openai") or {}
     gemini = data.get("gemini") or {}
+    deepseek = data.get("deepseek") or {}
 
     return AppConfig(
         provider=str(data.get("provider", "ollama")),
@@ -122,7 +140,10 @@ def load_config() -> AppConfig:
         gemini_base_url=str(gemini.get("base_url", DEFAULT_CONFIG["gemini"]["base_url"])),
         gemini_model=str(gemini.get("model", DEFAULT_CONFIG["gemini"]["model"])),
         gemini_api_key=str(gemini.get("api_key", "")),
-        system_prompt=str(data.get("system_prompt", DEFAULT_CONFIG["system_prompt"])),
+        deepseek_base_url=str(deepseek.get("base_url", DEFAULT_CONFIG["deepseek"]["base_url"])),
+        deepseek_model=str(deepseek.get("model", DEFAULT_CONFIG["deepseek"]["model"])),
+        deepseek_api_key=str(deepseek.get("api_key", "")),
+        system_prompt=str(data.get("system_prompt", DEFAULT_SYSTEM_PROMPT)),
         temperature=float(data.get("temperature", 0.7)),
         show_thinking=bool(data.get("show_thinking", DEFAULT_CONFIG["show_thinking"])),
     )
@@ -150,6 +171,11 @@ def save_config(cfg: AppConfig) -> None:
             "base_url": cfg.gemini_base_url,
             "model": cfg.gemini_model,
             "api_key": cfg.gemini_api_key,
+        },
+        "deepseek": {
+            "base_url": cfg.deepseek_base_url,
+            "model": cfg.deepseek_model,
+            "api_key": cfg.deepseek_api_key,
         },
         "system_prompt": cfg.system_prompt,
         "temperature": cfg.temperature,

@@ -24,7 +24,7 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
 from ..clipboard_util import copy_to_system_clipboard
-from ..config import AppConfig, save_config
+from ..config import AppConfig, DEFAULT_SYSTEM_PROMPT, PROVIDER_HELP_TEXT, save_config
 from ..document_loader import DocumentLoadError, build_document_prompt, load_document
 from ..history_store import (
     ChatSession,
@@ -34,7 +34,7 @@ from ..history_store import (
     save_session,
     title_from_message,
 )
-from ..providers import ChatMessage, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider
+from ..providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider
 from ..providers.base import ChatProvider
 from ..suggestions import ChatAutoSuggest
 from ..terminal_file_browser import FileBrowserState, handle_browser_input, render_browser_lines
@@ -72,7 +72,7 @@ class TuiChatApp:
 
         self.selected_message_index: int | None = None
         self.editing_message_index: int | None = None
-        self.status = "Siap. Ketik pesan, /file untuk dokumen, atau klik pesan untuk Copy/Edit."
+        self.status = "Fitur baru: /system untuk lihat, ubah, atau reset prompt aktif. Ketik /help untuk detail."
         self.mouse_enabled = True
         self.streaming = False
         self._stream_task: asyncio.Task[None] | None = None
@@ -145,6 +145,8 @@ class TuiChatApp:
             ]
         )
 
+        self._render_cache: dict[tuple, list[tuple]] = {}
+
         self.app = Application(
             layout=Layout(body, focused_element=self.input),
             key_bindings=merge_key_bindings(
@@ -156,6 +158,8 @@ class TuiChatApp:
         )
 
     def _make_provider(self) -> ChatProvider:
+        if self.cfg.provider == "deepseek":
+            return DeepSeekProvider(self.cfg.deepseek_base_url, self.cfg.deepseek_api_key)
         if self.cfg.provider == "gemini":
             return GeminiProvider(self.cfg.gemini_base_url, self.cfg.gemini_api_key)
         if self.cfg.provider == "openai":
@@ -240,6 +244,61 @@ class TuiChatApp:
 
     def _get_help_text(self) -> str:
         return "C-n: New, C-e: Edit, C-y: Copy, C-u/d: Scroll, C-q: Quit"
+
+    def _command_rows(self) -> list[tuple[str, str]]:
+        return [
+            ("/file <path> [tanya]", "baca dokumen lokal"),
+            ("/file --browse [tanya]", "buka browser file terminal"),
+            ("/help", "tampilkan daftar perintah"),
+            ("/new", "buat chat baru"),
+            ("/delete", "hapus chat aktif"),
+            ("/models [all]", "refresh daftar model"),
+            ("/model <nama>", "ganti model"),
+            (f"/provider {PROVIDER_HELP_TEXT}", "ganti backend"),
+            ("/apikey <key>", "set api key"),
+            ("/clear", "hapus chat saat ini"),
+            ("/regen", "generate ulang jawaban"),
+            ("/mouse on|off", "klik tombol / blok teks"),
+            ("/system", "lihat system prompt aktif"),
+            ("/system <teks>", "ubah system prompt aktif"),
+            ("/system reset", "kembali ke prompt default"),
+            ("/thinking on|off", "tampil proses berpikir"),
+            ("/status", "cek koneksi aktif"),
+            ("/save", "simpan konfigurasi"),
+            ("/exit", "keluar"),
+        ]
+
+    def _show_help_message(self) -> None:
+        lines = ["### Bantuan Command", ""]
+        for command, description in self._command_rows():
+            lines.append(f"- `{command}` — {description}")
+        lines.extend(
+            [
+                "",
+                "Shortcut utama: `Ctrl-N` chat baru, `Ctrl-Y` copy, `Ctrl-E` edit, `Ctrl-R` generate ulang, `F2` toggle mode klik/blok teks, `Ctrl-Q` keluar.",
+            ]
+        )
+        self.session.messages.append(ChatMessage("assistant", "\n".join(lines)))
+        self.selected_message_index = len(self.session.messages) - 1
+        self._request_scroll_to_bottom()
+        self._touch_session()
+        self.status = "Bantuan command ditambahkan ke layar chat."
+
+    def _show_system_prompt_message(self) -> None:
+        content = "\n".join(
+            [
+                "### System Prompt Aktif",
+                "",
+                "```text",
+                self.cfg.system_prompt.strip() or "(kosong)",
+                "```",
+            ]
+        )
+        self.session.messages.append(ChatMessage("assistant", content))
+        self.selected_message_index = len(self.session.messages) - 1
+        self._request_scroll_to_bottom()
+        self._touch_session()
+        self.status = "System prompt aktif ditampilkan di layar chat."
 
     def _key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
@@ -338,6 +397,7 @@ class TuiChatApp:
 
         role = self.session.messages[index].role
         self.session.messages[index] = ChatMessage(role, text)
+        self._render_cache.clear()
         if role == "user":
             del self.session.messages[index + 1 :]
             self.selected_message_index = index
@@ -406,10 +466,14 @@ class TuiChatApp:
             self._cancel_stream()
             self.app.exit()
             return
+        if cmd == "/help":
+            self._show_help_message()
+            return
         if cmd == "/clear":
             self.session.messages.clear()
             self.selected_message_index = None
             self.editing_message_index = None
+            self._render_cache.clear()
             self._touch_session("Chat baru")
             self.status = "Riwayat buffer ini dikosongkan."
             return
@@ -482,6 +546,7 @@ class TuiChatApp:
                     self.status = "Gunakan: /thinking on atau /thinking off"
                     return
             save_config(self.cfg)
+            self._render_cache.clear()
             state = "ditampilkan" if self.cfg.show_thinking else "disembunyikan"
             self.status = f"Proses berpikir {state}."
             return
@@ -505,19 +570,23 @@ class TuiChatApp:
             return
         if cmd == "/model" and len(parts) >= 2:
             self._select_model(parts[1])
+            self._render_cache.clear()
             return
         if cmd == "/provider" and len(parts) >= 2:
             try:
                 self.cfg.set_provider(parts[1].lower())
                 self.provider = self._make_provider()
                 self.status = f"Provider diganti ke {self.cfg.provider}."
+                self._render_cache.clear()
                 await self._refresh_models()
             except ValueError as exc:
                 self.status = f"Error: {exc}"
             return
         if cmd == "/apikey" and len(parts) >= 2:
             key = " ".join(parts[1:])
-            if self.cfg.provider == "gemini":
+            if self.cfg.provider == "deepseek":
+                self.cfg.deepseek_api_key = key
+            elif self.cfg.provider == "gemini":
                 self.cfg.gemini_api_key = key
             elif self.cfg.provider == "openai":
                 self.cfg.openai_api_key = key
@@ -529,11 +598,28 @@ class TuiChatApp:
             self.provider = self._make_provider()
             save_config(self.cfg)
             self.status = f"API key untuk {self.cfg.provider} telah disimpan."
+            self._render_cache.clear()
             await self._refresh_models()
             return
-        if cmd == "/system" and len(parts) >= 2:
-            self.cfg.system_prompt = text[len("/system") :].strip()
-            self.status = "System prompt diperbarui."
+        if cmd == "/system":
+            if len(parts) < 2 or (len(parts) == 2 and parts[1].lower() in ("show", "lihat", "active", "aktif")):
+                self._show_system_prompt_message()
+                return
+            if len(parts) == 2 and parts[1].lower() in ("reset", "default"):
+                self.cfg.system_prompt = DEFAULT_SYSTEM_PROMPT
+                self.status = "System prompt dikembalikan ke default. Gunakan /save jika ingin permanen."
+                self._render_cache.clear()
+                return
+            if len(parts) >= 3 and parts[1].lower() == "set":
+                new_prompt = text[len("/system") :].strip()[4:].strip()
+            else:
+                new_prompt = text[len("/system") :].strip()
+            if not new_prompt:
+                self.status = "Gunakan: /system, /system reset, atau /system <prompt>"
+                return
+            self.cfg.system_prompt = new_prompt
+            self.status = "System prompt aktif diperbarui. Gunakan /save jika ingin permanen."
+            self._render_cache.clear()
             return
         if cmd == "/status":
             online = await self.provider.health_check()
@@ -543,7 +629,7 @@ class TuiChatApp:
                 f"{self.cfg.active_model} | {len(self.session.messages)} pesan"
             )
             return
-        self.status = "Command: /file /new /delete /clear /regen /mouse /model /provider /system /thinking /status /save /exit"
+        self.status = "Command tidak dikenal. Ketik /help untuk daftar perintah."
 
     def _touch_session(self, title: str | None = None) -> None:
         self.session.touch(title)
@@ -558,6 +644,7 @@ class TuiChatApp:
         self.selected_message_index = None
         self.editing_message_index = None
         self.input.text = ""
+        self._render_cache.clear()
         self.status = "Chat baru dibuat."
         self.app.invalidate()
 
@@ -572,6 +659,7 @@ class TuiChatApp:
         self.selected_message_index = None
         self.editing_message_index = None
         self.input.text = ""
+        self._render_cache.clear()
         self.status = "Chat dihapus."
         self.app.invalidate()
 
@@ -589,6 +677,7 @@ class TuiChatApp:
         self.selected_message_index = None
         self.editing_message_index = None
         self.input.text = ""
+        self._render_cache.clear()
         self.status = f"Membuka chat: {session.title}"
         self.app.invalidate()
 
@@ -614,6 +703,7 @@ class TuiChatApp:
             self.app.invalidate()
             return
         self.cfg.set_model(model)
+        self._render_cache.clear()
         self.status = f"Model aktif: {self.cfg.active_model}"
         self.app.invalidate()
 
@@ -665,6 +755,20 @@ class TuiChatApp:
         self.status = f"{label} tersalin ke {suffix}."
         self.app.invalidate()
 
+    def _edit_system_prompt(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum mengubah system prompt."
+            self.app.invalidate()
+            return
+        self.editing_message_index = None
+        self.selected_message_index = None
+        prompt_body = self.cfg.system_prompt.rstrip()
+        self.input.text = f"/system {prompt_body}" if prompt_body else "/system "
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = "Edit system prompt di input bawah lalu tekan Enter. Gunakan /save jika ingin permanen."
+        self.app.invalidate()
+
     def _edit_selected(self) -> None:
         message = self._selected_message()
         if message is None:
@@ -700,6 +804,7 @@ class TuiChatApp:
             return
 
         message = self.session.messages[index]
+        self._render_cache.clear()
         if message.role == "user":
             del self.session.messages[index + 1 :]
             self.selected_message_index = index
@@ -883,6 +988,17 @@ class TuiChatApp:
     def _render_sidebar(self) -> AnyFormattedText:
         fragments = [("class:sidebar.title", "  DJ Chat Ai\n")]
         fragments.append(("class:sidebar.meta", "  Terminal AI assistant\n\n"))
+        fragments.append(("class:sidebar.section", "  System prompt\n"))
+        fragments.append(
+            ("class:button.hot", " [Edit System] ", self._click(self._edit_system_prompt))
+        )
+        fragments.append(("class:sidebar.meta", "\n  /system untuk lihat atau ubah\n"))
+        system_prompt_preview = " ".join(self.cfg.system_prompt.strip().split()) or "(kosong)"
+        for line in wrap(system_prompt_preview, width=24)[:3]:
+            fragments.append(("class:sidebar.meta", f"  {line}\n"))
+        if len(system_prompt_preview) > 72:
+            fragments.append(("class:sidebar.meta", "  ...\n"))
+        fragments.append(("class:sidebar.meta", "\n"))
         fragments.append(("class:sidebar.section", "  Chat history\n"))
         fragments.append(("class:sidebar.meta", "  Ctrl-N new  /delete hapus\n\n"))
         for session in self.sessions[:12]:
@@ -963,63 +1079,86 @@ class TuiChatApp:
         content_width = max(24, self._chat_width() - 6)
         for index, message in enumerate(self.session.messages):
             selected = index == self.selected_message_index
-            base_style = (
-                "class:message.user"
-                if message.role == "user"
-                else "class:message.assistant"
+            is_waiting_reply = self.streaming and index == len(self.session.messages) - 1
+            editing = self.editing_message_index == index
+
+            cache_key = (
+                "chat",
+                self.session.id,
+                index,
+                message.role,
+                message.content,
+                content_width,
+                selected,
+                editing,
+                is_waiting_reply,
+                self.cfg.show_thinking,
+                (index in self.expanded_thinking_indices),
             )
-            style = "class:message.selected" if selected else base_style
-            label = "Anda" if message.role == "user" else "Asisten"
-            label_icon = "●" if message.role == "user" else "◆"
-            label_style = (
-                "class:message.label.user"
-                if message.role == "user"
-                else "class:message.label.assistant"
-            )
-            text = message.content
-            if message.role == "assistant":
-                plain_answer = strip_think_tags(text, False)
-                # Auto-wrap raw HTML in code block if model forgot to use markdown
-                if "```" not in plain_answer and (
-                    "<html" in plain_answer.lower() or "<!doctype" in plain_answer.lower()
-                ):
-                    text = text.replace(plain_answer, f"```html\n{plain_answer}\n```")
+
+            if cache_key in self._render_cache and not is_waiting_reply:
+                msg_fragments = self._render_cache[cache_key]
+            else:
+                msg_fragments = []
+                base_style = (
+                    "class:message.user"
+                    if message.role == "user"
+                    else "class:message.assistant"
+                )
+                style = "class:message.selected" if selected else base_style
+                label = "Anda" if message.role == "user" else "Asisten"
+                label_icon = "●" if message.role == "user" else "◆"
+                label_style = (
+                    "class:message.label.user"
+                    if message.role == "user"
+                    else "class:message.label.assistant"
+                )
+                text = message.content
+                if message.role == "assistant":
+                    plain_answer = strip_think_tags(text, False)
+                    # Auto-wrap raw HTML in code block if model forgot to use markdown
+                    if "```" not in plain_answer and (
+                        "<html" in plain_answer.lower() or "<!doctype" in plain_answer.lower()
+                    ):
+                        text = text.replace(plain_answer, f"```html\n{plain_answer}\n```")
+
+                msg_fragments.append((label_style, f"    {label_icon} {label}"))
+                if editing:
+                    msg_fragments.append(("class:message.label.edit", "  edit"))
+
+                handler = self._click(lambda i=index: self._select_message(i))
+                if message.role == "assistant":
+                    if not text.strip() and is_waiting_reply:
+                        msg_fragments.extend(
+                            _render_plain_message(
+                                self._thinking_indicator(),
+                                "class:message.thinking",
+                                handler,
+                                content_width,
+                            )
+                        )
+                    else:
+                        toggle_handler = self._click(lambda i=index: self._toggle_thinking(i))
+                        msg_fragments.extend(
+                            _render_assistant_sections(
+                                text or "...",
+                                self.cfg.show_thinking,
+                                handler,
+                                content_width,
+                                is_expanded=(index in self.expanded_thinking_indices),
+                                toggle_handler=toggle_handler,
+                            )
+                        )
+                        msg_fragments.extend(self._render_message_actions(index))
+                else:
+                    msg_fragments.extend(_render_plain_message(text or "...", style, handler, content_width))
+                
+                if not is_waiting_reply:
+                    self._render_cache[cache_key] = msg_fragments
 
             if index > 0:
                 fragments.append(("", "\n"))
-            fragments.append((label_style, f"    {label_icon} {label}"))
-            if self.editing_message_index == index:
-                fragments.append(("class:message.label.edit", "  edit"))
-
-            handler = self._click(lambda i=index: self._select_message(i))
-            # Determine if we are waiting for the assistant's reply for this message
-            is_waiting_reply = self.streaming and index == len(self.session.messages) - 1
-            if message.role == "assistant":
-                if not text.strip() and is_waiting_reply:
-                    fragments.extend(
-                        _render_plain_message(
-                            self._thinking_indicator(),
-                            "class:message.thinking",
-                            handler,
-                            content_width,
-                        )
-                    )
-                else:
-                    toggle_handler = self._click(lambda i=index: self._toggle_thinking(i))
-                    fragments.extend(
-                        _render_assistant_sections(
-                            text or "...",
-                            self.cfg.show_thinking,
-                            handler,
-                            content_width,
-                            is_expanded=(index in self.expanded_thinking_indices),
-                            toggle_handler=toggle_handler,
-                        )
-                    )
-                    fragments.extend(self._render_message_actions(index))
-
-            else:
-                fragments.extend(_render_plain_message(text or "...", style, handler, content_width))
+            fragments.extend(msg_fragments)
 
         fragments.append(("", "\n\n\n"))
         self._chat_line_count = _count_fragment_lines(fragments)
@@ -1039,23 +1178,42 @@ class TuiChatApp:
             return fragments
 
         for index, message in enumerate(self.session.messages):
+            is_waiting_reply = self.streaming and index == len(self.session.messages) - 1
+            cache_key = (
+                "selectable",
+                self.session.id,
+                index,
+                message.role,
+                message.content,
+                width,
+                self.cfg.show_thinking,
+            )
+
+            if cache_key in self._render_cache and not is_waiting_reply:
+                msg_fragments = self._render_cache[cache_key]
+            else:
+                msg_fragments = []
+                label = "Anda" if message.role == "user" else "Asisten"
+                label_style = (
+                    "class:message.label.user"
+                    if message.role == "user"
+                    else "class:message.label.assistant"
+                )
+                msg_fragments.append((label_style, f"{label}:\n"))
+                content = (
+                    strip_think_tags(message.content, self.cfg.show_thinking)
+                    if message.role == "assistant"
+                    else message.content
+                )
+                msg_fragments.extend(
+                    _render_selectable_text(content or "...", "class:message.assistant", width)
+                )
+                if not is_waiting_reply:
+                    self._render_cache[cache_key] = msg_fragments
+
             if index > 0:
                 fragments.append(("", "\n"))
-            label = "Anda" if message.role == "user" else "Asisten"
-            label_style = (
-                "class:message.label.user"
-                if message.role == "user"
-                else "class:message.label.assistant"
-            )
-            fragments.append((label_style, f"{label}:\n"))
-            content = (
-                strip_think_tags(message.content, self.cfg.show_thinking)
-                if message.role == "assistant"
-                else message.content
-            )
-            fragments.extend(
-                _render_selectable_text(content or "...", "class:message.assistant", width)
-            )
+            fragments.extend(msg_fragments)
 
         fragments.append(("", "\n"))
         return fragments
@@ -1082,9 +1240,11 @@ class TuiChatApp:
         width = self._chat_width()
         logo = TUI_LOGO if width >= max(len(line) for line in TUI_LOGO) else ["DJ CHAT AI"]
         intro = [
-            "Chat terminal untuk Ollama, LocalAI, OpenAI, dan Gemini",
+            "Chat terminal untuk Ollama, LocalAI, OpenAI, Gemini, dan DeepSeek",
             "",
             "Mulai dengan mengetik pesan di bawah, atau gunakan /file untuk membaca dokumen.",
+            "",
+            "Fitur baru: pakai /system untuk melihat, mengubah, atau reset system prompt aktif.",
         ]
         shortcuts = [
             ("Right/Ctrl-F", "terima suggestion"),
@@ -1098,16 +1258,7 @@ class TuiChatApp:
             ("Ctrl-Q", "keluar"),
         ]
         commands = [
-            ("/file <path> [tanya]", "baca dokumen lokal"),
-            ("/models [all]", "refresh daftar model"),
-            ("/model <nama>", "ganti model"),
-            ("/provider ollama|localai|openai|gemini", "ganti backend"),
-            ("/apikey <key>", "set api key"),
-            ("/clear", "hapus chat saat ini"),
-            ("/regen", "generate ulang jawaban"),
-            ("/mouse on|off", "klik tombol / blok teks"),
-            ("/thinking on|off", "tampil proses berpikir"),
-            ("/save", "simpan konfigurasi"),
+            *self._command_rows(),
         ]
 
         fragments: list[tuple] = []
@@ -1115,7 +1266,7 @@ class TuiChatApp:
         fragments.extend(_center_lines(logo, width, "class:welcome.logo"))
         fragments.extend(
             _center_lines(
-                ["", intro[0], "", intro[2], ""],
+                ["", intro[0], "", intro[2], "", intro[4], ""],
                 width,
                 "class:welcome.title",
             )
@@ -1154,6 +1305,8 @@ class TuiChatApp:
             ("class:button.hot", " [Copy] ", self._click(self._copy_selected)),
             ("", " "),
             ("class:button.hot", " [Edit] ", self._click(self._edit_selected)),
+            ("", " "),
+            ("class:button.hot", " [Edit System] ", self._click(self._edit_system_prompt)),
             ("", " "),
             ("class:button.hot", " [Generate ulang] ", self._click(self._regenerate_selected)),
             ("", " "),

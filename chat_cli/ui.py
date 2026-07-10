@@ -13,6 +13,8 @@ from rich.rule import Rule
 from rich.text import Text
 from rich.theme import Theme
 
+from .config import PROVIDER_HELP_TEXT
+
 THEME = Theme(
     {
         "banner.c1": "bold #7ee787",
@@ -37,6 +39,24 @@ BANNER_ART = r"""
 | |_| || |_| || |___| | | | (_| | |_ / ___ \ | |
 |____/  \___/  \____|_| |_|\__,_|\__/_/   \_\___|
 """
+
+HELP_ROWS = [
+    ("/file <path> [pertanyaan]", "Baca file lokal lalu tanyakan isinya"),
+    ("/file --browse [pertanyaan]", "Buka file browser terminal"),
+    ("/help", "Tampilkan bantuan"),
+    ("/exit, /quit", "Keluar"),
+    ("/clear", "Hapus riwayat percakapan"),
+    ("/models", "Daftar model tersedia"),
+    ("/model <nama>", "Ganti model"),
+    (f"/provider {PROVIDER_HELP_TEXT}", "Ganti backend"),
+    ("/apikey <key>", "Set API key untuk backend aktif"),
+    ("/system", "Lihat system prompt aktif"),
+    ("/system <teks>", "Ubah system prompt aktif"),
+    ("/system reset", "Kembalikan system prompt default"),
+    ("/thinking on|off", "Tampilkan/sembunyikan proses berpikir"),
+    ("/save", "Simpan konfigurasi"),
+    ("/status", "Info koneksi & pengaturan"),
+]
 
 
 def show_banner(provider: str, model: str, base_url: str) -> None:
@@ -68,22 +88,8 @@ def show_banner(provider: str, model: str, base_url: str) -> None:
 
 
 def show_help() -> None:
-    rows = [
-        ("/file <path> [pertanyaan]", "Baca file lokal lalu tanyakan isinya"),
-        ("/help", "Tampilkan bantuan"),
-        ("/exit, /quit", "Keluar"),
-        ("/clear", "Hapus riwayat percakapan"),
-        ("/models", "Daftar model tersedia"),
-        ("/model <nama>", "Ganti model"),
-        ("/provider ollama|localai|openai|gemini", "Ganti backend"),
-        ("/apikey <key>", "Set API key untuk backend aktif"),
-        ("/system <teks>", "Ubah system prompt"),
-        ("/thinking on|off", "Tampilkan/sembunyikan proses berpikir"),
-        ("/save", "Simpan konfigurasi"),
-        ("/status", "Info koneksi & pengaturan"),
-    ]
     body = Text()
-    for cmd, desc in rows:
+    for cmd, desc in HELP_ROWS:
         body.append(f"  {cmd:<40}", style="cmd")
         body.append(f"{desc}\n", style="dim")
     console.print(
@@ -110,6 +116,20 @@ def show_status(
     )
     console.print(
         Panel(body, title="STATUSLINE", border_style="#238636", box=box.SQUARE)
+    )
+
+
+def show_system_prompt(system_prompt: str) -> None:
+    body = Text()
+    body.append("System prompt aktif saat ini:\n\n", style="accent")
+    body.append(system_prompt.strip() or "(kosong)", style="assistant")
+    console.print(
+        Panel(
+            body,
+            title="[bold #7ee787] SYSTEM PROMPT [/]",
+            border_style="#30363d",
+            box=box.SQUARE,
+        )
     )
 
 

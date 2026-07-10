@@ -3,7 +3,7 @@
 ![Tampilan DJ Chat Ai](./Screenshot_2.png)
 ![Tampilan DJ Chat Ai 2](./Screenshot_1.png)
 
-Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **Ollama**, dan **LocalAI**.
+Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **DeepSeek**, **Ollama**, dan **LocalAI**.
 
 ## Fitur Utama
 
@@ -21,9 +21,9 @@ Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit)
 - Python 3.10 atau lebih baru
 - `python3-venv` untuk membuat virtualenv
 - Salah satu backend AI:
-  - **Ollama** berjalan di `http://127.0.0.1:11434`
+  - **Ollama** berjalan di `http://127.0.0.1:11434` (untuk model lokal, termasuk DeepSeek lokal)
   - **LocalAI** berjalan di `http://127.0.0.1:8080`
-  - **OpenAI/Gemini** dengan API key
+  - **OpenAI/Gemini/DeepSeek** dengan API key
 
 Di Ubuntu/Debian:
 
@@ -251,10 +251,16 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/new` | Buat sesi chat baru |
 | `/delete` | Hapus sesi chat aktif |
 | `/models` | Daftar model |
+| `/models all` | Tampilkan semua model ke layar chat |
 | `/model <nama>` | Ganti model |
-| `/provider ollama\|localai` | Ganti backend |
+| `/provider ollama\|localai\|openai\|gemini\|deepseek` | Ganti backend |
+| `/apikey <key>` | Simpan API key untuk provider aktif |
 | `/clear` | Hapus riwayat |
-| `/system <teks>` | Ubah system prompt |
+| `/regen` | Generate ulang jawaban terakhir/terpilih |
+| `/mouse on\|off` | Ganti mode klik atau blok teks di TUI |
+| `/system` | Lihat system prompt aktif |
+| `/system <teks>` | Ubah system prompt aktif |
+| `/system reset` | Kembalikan system prompt ke default |
 | `/thinking on\|off` | Tampilkan/sembunyikan proses berpikir |
 | `/status` | Cek koneksi |
 | `/save` | Simpan config |
@@ -262,6 +268,13 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 
 Saat `/thinking on`, alur berpikir ditampilkan dalam blok visual terpisah
 berlabel `Proses berpikir`, sedangkan respons final tampil sebagai `Jawaban utama`.
+
+Untuk mengecek prompt internal yang sedang dipakai, jalankan `/system`.
+Untuk mengubahnya, gunakan `/system <teks baru>`, lalu `/save` jika ingin
+perubahan itu tersimpan untuk sesi berikutnya.
+
+`/new`, `/delete`, `/regen`, dan `/mouse` tersedia di TUI full-screen yang
+menjadi mode default saat menjalankan `aichat`.
 
 Contoh membaca file di mode chat:
 
@@ -306,6 +319,11 @@ Edit `~/.config/ai-chat-cli/config.json`:
   "ollama": {
     "base_url": "http://127.0.0.1:11434",
     "model": "qwen2.5:1.5b"
+  },
+  "deepseek": {
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-chat",
+    "api_key": ""
   },
   "localai": {
     "base_url": "http://127.0.0.1:8080",

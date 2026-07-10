@@ -11,9 +11,16 @@ from prompt_toolkit.history import FileHistory
 from rich.live import Live
 from rich.text import Text
 
-from .config import CONFIG_DIR, AppConfig, load_config, save_config
+from .config import (
+    CONFIG_DIR,
+    AppConfig,
+    DEFAULT_SYSTEM_PROMPT,
+    PROVIDER_HELP_TEXT,
+    load_config,
+    save_config,
+)
 from .document_loader import DocumentLoadError, build_document_prompt, load_document
-from .providers import ChatMessage, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider
+from .providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider
 from .providers.base import ChatProvider
 from .suggestions import ChatAutoSuggest
 from .terminal_file_browser import FileBrowserState, handle_browser_input, render_browser_lines
@@ -34,6 +41,8 @@ class ChatApp:
         )
 
     def _make_provider(self) -> ChatProvider:
+        if self.cfg.provider == "deepseek":
+            return DeepSeekProvider(self.cfg.deepseek_base_url, self.cfg.deepseek_api_key)
         if self.cfg.provider == "gemini":
             return GeminiProvider(self.cfg.gemini_base_url, self.cfg.gemini_api_key)
         if self.cfg.provider == "openai":
@@ -192,7 +201,7 @@ class ChatApp:
 
         if cmd == "/provider":
             if len(parts) < 2:
-                ui.show_error("Gunakan: /provider ollama|localai|openai|gemini")
+                ui.show_error(f"Gunakan: /provider {PROVIDER_HELP_TEXT}")
                 return True
             try:
                 self.cfg.set_provider(parts[1].lower())
@@ -207,7 +216,9 @@ class ChatApp:
                 ui.show_error("Gunakan: /apikey <key>")
                 return True
             key = " ".join(parts[1:])
-            if self.cfg.provider == "gemini":
+            if self.cfg.provider == "deepseek":
+                self.cfg.deepseek_api_key = key
+            elif self.cfg.provider == "gemini":
                 self.cfg.gemini_api_key = key
             elif self.cfg.provider == "openai":
                 self.cfg.openai_api_key = key
@@ -222,11 +233,22 @@ class ChatApp:
             return True
 
         if cmd == "/system":
-            if len(parts) < 2:
-                ui.show_error("Gunakan: /system <prompt>")
+            if len(parts) < 2 or (len(parts) == 2 and parts[1].lower() in ("show", "lihat", "active", "aktif")):
+                ui.show_system_prompt(self.cfg.system_prompt)
                 return True
-            self.cfg.system_prompt = parts[1] if len(parts) == 2 else text[len("/system"):].strip()
-            ui.show_success("System prompt diperbarui.")
+            if len(parts) == 2 and parts[1].lower() in ("reset", "default"):
+                self.cfg.system_prompt = DEFAULT_SYSTEM_PROMPT
+                ui.show_success("System prompt dikembalikan ke default. Gunakan /save jika ingin permanen.")
+                return True
+            if len(parts) >= 3 and parts[1].lower() == "set":
+                new_prompt = text[len("/system") :].strip()[4:].strip()
+            else:
+                new_prompt = text[len("/system"):].strip()
+            if not new_prompt:
+                ui.show_error("Gunakan: /system, /system reset, atau /system <prompt>")
+                return True
+            self.cfg.system_prompt = new_prompt
+            ui.show_success("System prompt aktif diperbarui. Gunakan /save jika ingin permanen.")
             return True
 
         if cmd == "/save":
@@ -298,6 +320,7 @@ class ChatApp:
 
         ui.show_banner(self.cfg.provider, self.cfg.active_model, self.cfg.active_base_url)
         ui.show_help()
+        ui.show_info("Fitur baru: gunakan /system untuk melihat, mengubah, atau reset system prompt aktif.")
         ui.console.print()
 
         while True:

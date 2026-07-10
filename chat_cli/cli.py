@@ -9,7 +9,14 @@ import click
 
 from . import ui
 from .app import ChatApp
-from .config import CONFIG_DIR, CONFIG_FILE, AppConfig, load_config, save_config
+from .config import (
+    CONFIG_DIR,
+    CONFIG_FILE,
+    AppConfig,
+    SUPPORTED_PROVIDERS,
+    load_config,
+    save_config,
+)
 from .document_loader import DocumentLoadError, build_document_prompt, load_document
 from .tui import TuiChatApp
 
@@ -111,8 +118,8 @@ async def _ask_once(cfg: AppConfig, prompt: str, file_path: str | None = None) -
 @click.option(
     "-p",
     "--provider",
-    type=click.Choice(["ollama", "localai", "openai", "gemini"], case_sensitive=False),
-    help="Backend AI (ollama, localai, openai, atau gemini).",
+    type=click.Choice(SUPPORTED_PROVIDERS, case_sensitive=False),
+    help="Backend AI (ollama, localai, openai, gemini, atau deepseek).",
 )
 @click.option("-t", "--temperature", type=float, help="Suhu sampling (0.0–2.0).")
 @click.option("--system-prompt", help="System prompt untuk sesi ini.")
@@ -130,7 +137,7 @@ def cli(
     system_prompt: str | None,
     show_thinking: bool | None,
 ) -> None:
-    """DJ Chat Ai — chat AI lokal via Ollama atau LocalAI."""
+    """DJ Chat Ai — chat AI multi-provider di terminal."""
     cfg = _apply_options(
         load_config(),
         model=model,
