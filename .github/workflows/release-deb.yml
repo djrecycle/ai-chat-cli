@@ -1,0 +1,93 @@
+name: Build Debian Release
+
+on:
+  push:
+    tags:
+      - "*"
+  release:
+    types:
+      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag release target (opsional untuk run manual)"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-deb-${{ github.event.release.tag_name || inputs.tag || github.ref_name || github.run_id }}
+  cancel-in-progress: false
+
+jobs:
+  build-and-upload:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dpkg-dev
+          python -m pip install --upgrade pip
+
+      - name: Build .deb package
+        run: ./build-deb.sh
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          if [[ "${GITHUB_EVENT_NAME}" == "release" ]]; then
+            tag="${{ github.event.release.tag_name }}"
+          elif [[ -n "${{ inputs.tag }}" ]]; then
+            tag="${{ inputs.tag }}"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+
+          deb_path="$(ls dist/*.deb | head -n 1)"
+          deb_name="$(basename "$deb_path")"
+
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "deb_path=$deb_path" >> "$GITHUB_OUTPUT"
+          echo "deb_name=$deb_name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.meta.outputs.deb_name }}
+          path: ${{ steps.meta.outputs.deb_path }}
+
+      - name: Ensure GitHub Release exists
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${{ steps.meta.outputs.tag }}"
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag sudah ada."
+            exit 0
+          fi
+
+          gh release create "$tag" --verify-tag --generate-notes
+
+      - name: Upload .deb to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload \
+            "${{ steps.meta.outputs.tag }}" \
+            "${{ steps.meta.outputs.deb_path }}" \
+            --clobber

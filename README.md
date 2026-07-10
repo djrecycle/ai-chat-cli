@@ -61,6 +61,10 @@ Download file `.deb` dari halaman [Releases](https://github.com/djrecycle/ai-cha
 sudo dpkg -i aichat_1.0.0_all.deb
 ```
 
+Repo ini sekarang juga punya workflow GitHub Actions yang akan build dan
+upload file `.deb` otomatis saat tag didorong ke GitHub atau saat release
+dipublish.
+
 Setelah terinstall, langsung jalankan:
 
 ```bash
