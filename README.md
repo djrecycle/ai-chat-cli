@@ -12,7 +12,10 @@ Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit)
 - **Smart Markdown Labeling:** Mendeteksi isi kotak markdown secara otomatis (misal: otomatis melabeli kotak sebagai "lirik" jika mendeteksi teks lagu).
 - **Konteks Dokumen (RAG Lokal):** Baca file lokal (`.txt`, `.pdf`, `.docx`, gambar OCR) untuk dijadikan konteks obrolan lewat perintah `/file`.
 - **Ganti Model On-the-fly:** Ubah provider atau model langsung di dalam chat tanpa perlu *restart* (`/provider`, `/model`).
-- **Penyimpanan Otomatis:** Riwayat chat (`~/.config/ai-chat-cli/sessions`) dan konfigurasi tersimpan permanen.
+- **Penyimpanan Otomatis:** Riwayat chat (`~/.config/ai-chat-cli/sessions`) dan konfigurasi tersimpan permanen; judul chat dapat diganti dari tombol **Rename Chat** atau perintah `/rename`.
+- **Folder Project:** Kelompokkan chat berdasarkan tema atau pekerjaan. Project dan chat tampil bertingkat di sidebar, seperti folder project pada ChatGPT.
+- **Monitor Resource Real-time:** Status bar menampilkan penggunaan CPU dan RAM proses aplikasi, diperbarui setiap detik selama TUI berjalan.
+- **Statistik Token:** Setiap jawaban menampilkan token masuk, token keluar, dan total token; tanda `~` berarti angka estimasi karena provider tidak mengirim metadata usage.
 
 ## Instalasi
 
@@ -58,7 +61,7 @@ Cara paling mudah untuk menginstall di sistem Debian/Ubuntu — tidak perlu setu
 Download file `.deb` dari halaman [Releases](https://github.com/djrecycle/ai-chat-cli/releases), lalu install:
 
 ```bash
-sudo dpkg -i aichat_1.0.0_all.deb
+sudo dpkg -i aichat_1.3.0_all.deb
 ```
 
 Repo ini sekarang juga punya workflow GitHub Actions yang akan build dan
@@ -93,7 +96,7 @@ chmod +x build-deb.sh
 ./build-deb.sh
 
 # Install hasil build
-sudo dpkg -i dist/aichat_1.0.0_all.deb
+sudo dpkg -i dist/aichat_1.3.0_all.deb
 ```
 
 Untuk menyertakan fitur dokumen (Pillow, pypdf, pytesseract, python-docx):
@@ -265,6 +268,13 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/help` | Bantuan |
 | `/new` | Buat sesi chat baru |
 | `/delete` | Hapus sesi chat aktif |
+| `/rename <judul>` | Ganti judul sesi chat aktif |
+| `/project` | Lihat project aktif dan daftar project |
+| `/project new <nama>` | Buat folder project dan chat baru di dalamnya |
+| `/project <nama>` | Buka project yang sudah ada |
+| `/project move <nama>` | Pindahkan chat aktif ke project tertentu |
+| `/project rename <nama>` | Ganti nama project aktif beserta seluruh chat di dalamnya |
+| `/project delete confirm` | Hapus project aktif beserta seluruh chat di dalamnya |
 | `/models` | Daftar model |
 | `/models all` | Tampilkan semua model ke layar chat |
 | `/model <nama>` | Ganti model |
@@ -272,6 +282,7 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/apikey <key>` | Simpan API key untuk provider aktif |
 | `/clear` | Hapus riwayat |
 | `/regen` | Generate ulang jawaban terakhir/terpilih |
+| `/stop` | Hentikan jawaban AI yang sedang diproses (TUI: tombol **[■]** atau `Esc`) |
 | `/mouse on\|off` | Ganti mode klik atau blok teks di TUI |
 | `/system` | Lihat system prompt aktif |
 | `/system <teks>` | Ubah system prompt aktif |
@@ -288,8 +299,31 @@ Untuk mengecek prompt internal yang sedang dipakai, jalankan `/system`.
 Untuk mengubahnya, gunakan `/system <teks baru>`, lalu `/save` jika ingin
 perubahan itu tersimpan untuk sesi berikutnya.
 
-`/new`, `/delete`, `/regen`, dan `/mouse` tersedia di TUI full-screen yang
+`/new`, `/delete`, `/rename`, `/project`, `/regen`, dan `/mouse` tersedia di TUI full-screen yang
 menjadi mode default saat menjalankan `aichat`.
+
+### Mengelompokkan chat dengan Project
+
+Klik ikon **＋** di sidebar atau ikon **▣** di toolbar, ketik nama project, lalu tekan
+Enter. Chat baru berikutnya otomatis dibuat di dalam project aktif. Folder project dapat diklik
+di sidebar untuk membuka chat terakhir di dalamnya. Klik folder yang sudah terbuka sekali lagi
+untuk collapse/menyembunyikan daftar chat; klik kembali untuk expand.
+
+```text
+/project new Website Toko
+/project new Belajar Python
+/project Website Toko
+/project move Belajar Python
+/project rename Belajar Python Lanjutan
+/project delete confirm
+```
+
+Chat lama yang belum memiliki project otomatis ditampilkan dalam folder **Umum**. Data project
+disimpan di `~/.config/ai-chat-cli/projects.json`, sedangkan isi chat tetap berada di folder
+`~/.config/ai-chat-cli/sessions`. Project aktif juga dapat diganti namanya atau dihapus melalui
+ikon **✎** dan **×** di bawah daftar project pada sidebar. Penghapusan baru dijalankan setelah
+mengetik `confirm`, dan akan menghapus seluruh chat di dalam Project tersebut. Folder **Umum**
+dilindungi sehingga tidak dapat diganti namanya atau dihapus.
 
 Contoh membaca file di mode chat:
 
@@ -303,8 +337,10 @@ Contoh membaca file di mode chat:
 /file --browse jelaskan poin penting dan risiko utamanya
 ```
 
-Di file browser CLI: ketik nomor untuk masuk folder atau memilih file, `..` untuk naik folder,
-`/teks` untuk filter nama file, `/` untuk menghapus filter, dan `q` untuk batal.
+Di file browser TUI, folder dan file dapat langsung diklik. Klik folder untuk membukanya;
+klik file untuk memuatnya ke chat dan langsung meminta jawaban AI. Keyboard tetap dapat dipakai:
+ketik nomor untuk masuk folder atau memilih file, `..` untuk naik folder, `/teks` untuk filter
+nama file, `/` untuk menghapus filter, dan `q` untuk batal.
 
 File teks seperti `.txt`, `.md`, `.py`, `.json`, `.csv`, dan log bisa dibaca langsung.
 Untuk DOCX, PDF, dan gambar, install paket opsional seperti di bagian
@@ -320,6 +356,52 @@ install aplikasi OCR Tesseract di sistem:
 ```bash
 sudo apt install tesseract-ocr tesseract-ocr-ind
 ```
+
+> [!IMPORTANT]
+> Dukungan gambar asli saat ini hanya tersedia pada provider **Gemini** dan **Ollama**.
+> Provider OpenAI, DeepSeek, dan LocalAI pada aplikasi ini belum menerima gambar asli; gambar
+> diproses melalui Tesseract OCR dan hanya teks hasil ekstraksinya yang dikirim ke model.
+
+Gemini dan Ollama mengirim gambar langsung sebagai input multimodal sehingga model vision dapat
+memahami objek, diagram, warna, tata letak, dan teks dalam gambar. Pastikan model yang dipilih memang
+mendukung input atau output gambar.
+
+| Provider | Kegunaan | Contoh model yang didukung |
+|---|---|---|
+| Gemini | Memahami gambar | `gemini-3.5-flash`, `gemini-3-flash-preview`, `gemini-2.5-flash`, `gemini-2.5-pro`, `gemma-4-26b-a4b-it`, `gemma-4-31b-it` |
+| Gemini | Generate dan edit gambar | `gemini-3.1-flash-lite-image`, `gemini-3.1-flash-image`, `gemini-3-pro-image`, `gemini-2.5-flash-image` |
+| Ollama | Memahami gambar secara lokal | `granite3.2-vision:2b`, `qwen2.5vl:3b`, `gemma3:4b`, `gemma3:12b`, `gemma3:27b`, `llama3.2-vision:11b` |
+| Ollama | Generate gambar | Belum didukung oleh integrasi aplikasi ini |
+
+Daftar tersebut merupakan contoh model yang diketahui mendukung gambar, bukan daftar lengkap.
+Ketersediaan model Gemini bergantung pada API key dan region. Model Ollama harus diunduh terlebih
+dahulu dan ukuran model perlu disesuaikan dengan RAM/CPU/GPU komputer.
+
+Contoh memahami gambar:
+
+```text
+/file ./foto-studio.jpg jelaskan semua yang terlihat pada gambar ini
+/file ./diagram.png jelaskan alur diagram ini secara bertahap
+```
+
+Ukuran gambar maksimum untuk upload langsung adalah 15 MB. Untuk laptop dengan RAM 8 GB tanpa GPU
+diskrit, gunakan `granite3.2-vision:2b`; `qwen2.5vl:3b` dan `gemma3:4b` membutuhkan lebih banyak RAM
+dan biasanya lebih lambat.
+
+### Generate dan edit gambar
+
+Pilih provider Gemini dan model image, lalu tulis prompt seperti pesan chat biasa. Model yang
+direkomendasikan adalah `gemini-3.1-flash-image`; gunakan `gemini-3-pro-image` untuk pekerjaan
+visual profesional yang lebih kompleks.
+
+```text
+/model gemini-3.1-flash-image
+Buat ilustrasi studio musik futuristik dengan pencahayaan neon, rasio 16:9
+```
+
+Gambar yang dihasilkan disimpan otomatis ke `~/Pictures/DJ-Chat-AI/`, kemudian lokasi file
+ditampilkan pada jawaban chat. Untuk mengedit gambar, pilih gambar melalui tombol **[File]** saat
+model image aktif, lalu sertakan instruksi perubahan, misalnya "ubah latar menjadi matahari terbenam".
 
 Catatan: PDF hasil scan biasanya tidak punya teks tertanam. Ubah halaman PDF scan menjadi gambar,
 lalu baca dengan `/file gambar.png ...`, atau jalankan OCR PDF di luar aplikasi terlebih dahulu.

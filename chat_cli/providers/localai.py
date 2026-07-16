@@ -14,6 +14,8 @@ from .base import ChatMessage, ChatProvider
 
 
 class LocalAIProvider(ChatProvider):
+    request_stream_usage = False
+
     def __init__(self, base_url: str, api_key: str = "") -> None:
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key
@@ -47,14 +49,16 @@ class LocalAIProvider(ChatProvider):
         model: str,
         temperature: float,
     ) -> Iterator[str]:
-        payload = json.dumps(
-            {
-                "model": model,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
-                "stream": True,
-                "temperature": temperature,
-            }
-        ).encode()
+        self.reset_usage()
+        payload_dict = {
+            "model": model,
+            "messages": [{"role": m.role, "content": m.content} for m in messages],
+            "stream": True,
+            "temperature": temperature,
+        }
+        if self.request_stream_usage:
+            payload_dict["stream_options"] = {"include_usage": True}
+        payload = json.dumps(payload_dict).encode()
         req = Request(
             f"{self.base_url}/v1/chat/completions",
             data=payload,
@@ -73,6 +77,13 @@ class LocalAIProvider(ChatProvider):
                     chunk = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                usage = chunk.get("usage") or {}
+                if usage:
+                    self.set_usage(
+                        int(usage.get("prompt_tokens", 0)),
+                        int(usage.get("completion_tokens", 0)),
+                        int(usage.get("total_tokens", 0)),
+                    )
                 choices = chunk.get("choices") or []
                 if not choices:
                     continue

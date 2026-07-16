@@ -40,10 +40,18 @@ class OllamaProvider(ChatProvider):
         model: str,
         temperature: float,
     ) -> Iterator[str]:
+        self.reset_usage()
+        api_messages = []
+        for message in messages:
+            api_message = {"role": message.role, "content": message.content}
+            if message.images:
+                api_message["images"] = [image.data for image in message.images]
+            api_messages.append(api_message)
+
         payload = json.dumps(
             {
                 "model": model,
-                "messages": [{"role": m.role, "content": m.content} for m in messages],
+                "messages": api_messages,
                 "stream": True,
                 "options": {"temperature": temperature},
             }
@@ -68,6 +76,10 @@ class OllamaProvider(ChatProvider):
                 if content:
                     yield content
                 if chunk.get("done"):
+                    self.set_usage(
+                        int(chunk.get("prompt_eval_count", 0)),
+                        int(chunk.get("eval_count", 0)),
+                    )
                     break
 
     async def chat_stream(

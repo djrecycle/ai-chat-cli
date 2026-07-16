@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import shlex
+from pathlib import Path
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
@@ -19,8 +20,14 @@ from .config import (
     load_config,
     save_config,
 )
-from .document_loader import DocumentLoadError, build_document_prompt, load_document
-from .providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider
+from .document_loader import (
+    IMAGE_EXTENSIONS,
+    DocumentLoadError,
+    build_document_prompt,
+    build_image_message,
+    load_document,
+)
+from .providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, TokenUsage, estimate_token_usage
 from .providers.base import ChatProvider
 from .suggestions import ChatAutoSuggest
 from .terminal_file_browser import FileBrowserState, handle_browser_input, render_browser_lines
@@ -68,6 +75,7 @@ class ChatApp:
                 ui.strip_think_tags(message.content, False)
                 if message.role == "assistant"
                 else message.content,
+                images=message.images,
             )
             for message in self.history
         )
@@ -105,6 +113,20 @@ class ChatApp:
 
         return full
 
+    def _reply_usage(self, reply: str) -> TokenUsage:
+        return self.provider.last_usage or estimate_token_usage(
+            self._api_messages(), reply
+        )
+
+    @staticmethod
+    def _show_token_usage(usage: TokenUsage) -> None:
+        marker = "~" if usage.estimated else ""
+        ui.show_info(
+            f"Token: masuk {marker}{usage.input_tokens} | "
+            f"keluar {marker}{usage.output_tokens} | "
+            f"total {marker}{usage.total_tokens}"
+        )
+
     async def handle_message(self, user_input: str) -> bool:
         """Process user input. Returns False to exit."""
         text = user_input.strip()
@@ -120,7 +142,9 @@ class ChatApp:
         try:
             ui.show_assistant_stream_start()
             reply = await self._stream_reply()
-            self.history.append(ChatMessage("assistant", reply))
+            usage = self._reply_usage(reply)
+            self.history.append(ChatMessage("assistant", reply, token_usage=usage))
+            self._show_token_usage(usage)
         except Exception as exc:
             ui.show_error(str(exc))
             self.history.pop()
@@ -165,17 +189,26 @@ class ChatApp:
                 question_parts = args[2:]
 
             try:
-                document = load_document(file_path)
+                if self.cfg.provider in ("gemini", "ollama") and Path(file_path).suffix.lower() in IMAGE_EXTENSIONS:
+                    message = build_image_message(file_path, " ".join(question_parts))
+                    display_path = Path(file_path).expanduser()
+                else:
+                    document = load_document(file_path)
+                    message = ChatMessage(
+                        "user", build_document_prompt(document, " ".join(question_parts))
+                    )
+                    display_path = document.path
             except DocumentLoadError as exc:
                 ui.show_error(str(exc))
                 return True
-            prompt = build_document_prompt(document, " ".join(question_parts))
-            ui.show_user_message(f"/file {document.path}")
-            self.history.append(ChatMessage("user", prompt))
+            ui.show_user_message(f"/file {display_path}")
+            self.history.append(message)
             try:
                 ui.show_assistant_stream_start()
                 reply = await self._stream_reply()
-                self.history.append(ChatMessage("assistant", reply))
+                usage = self._reply_usage(reply)
+                self.history.append(ChatMessage("assistant", reply, token_usage=usage))
+                self._show_token_usage(usage)
             except Exception as exc:
                 ui.show_error(str(exc))
                 self.history.pop()

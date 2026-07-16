@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import sys
+from pathlib import Path
 
 import click
 
+from . import __version__
 from . import ui
 from .app import ChatApp
 from .config import (
@@ -17,7 +19,13 @@ from .config import (
     load_config,
     save_config,
 )
-from .document_loader import DocumentLoadError, build_document_prompt, load_document
+from .document_loader import (
+    IMAGE_EXTENSIONS,
+    DocumentLoadError,
+    build_document_prompt,
+    build_image_message,
+    load_document,
+)
 from .tui import TuiChatApp
 
 
@@ -90,18 +98,27 @@ async def _ask_once(cfg: AppConfig, prompt: str, file_path: str | None = None) -
 
     if file_path:
         try:
-            document = load_document(file_path)
+            if cfg.provider in ("gemini", "ollama") and Path(file_path).suffix.lower() in IMAGE_EXTENSIONS:
+                message = build_image_message(file_path, prompt)
+                display_path = Path(file_path).expanduser()
+                prompt = message.content
+            else:
+                document = load_document(file_path)
+                prompt = build_document_prompt(document, prompt)
+                message = ChatMessage("user", prompt)
+                display_path = document.path
         except DocumentLoadError as exc:
             ui.show_error(str(exc))
             raise SystemExit(1) from exc
-        prompt = build_document_prompt(document, prompt)
-        ui.show_user_message(f"[file: {document.path}]\n{prompt.splitlines()[-1]}")
+        ui.show_user_message(f"[file: {display_path}]\n{prompt.splitlines()[-1]}")
     else:
         ui.show_user_message(prompt)
-    app.history = [ChatMessage("user", prompt)]
+        message = ChatMessage("user", prompt)
+    app.history = [message]
     try:
         ui.show_assistant_stream_start()
-        await app._stream_reply()
+        reply = await app._stream_reply()
+        app._show_token_usage(app._reply_usage(reply))
     except Exception as exc:
         ui.show_error(str(exc))
         raise SystemExit(1) from exc
@@ -113,7 +130,7 @@ async def _ask_once(cfg: AppConfig, prompt: str, file_path: str | None = None) -
     context_settings={"help_option_names": ["-h", "--help"]},
     invoke_without_command=True,
 )
-@click.version_option(version="1.0.0", prog_name="DJ Chat Ai")
+@click.version_option(version=__version__, prog_name="DJ Chat Ai")
 @click.option("-m", "--model", help="Model AI yang dipakai.")
 @click.option(
     "-p",

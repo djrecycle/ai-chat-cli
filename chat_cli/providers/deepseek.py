@@ -7,4 +7,4 @@ class DeepSeekProvider(LocalAIProvider):
     DeepSeek Provider is essentially identical to LocalAIProvider,
     as DeepSeek API is OpenAI-compatible.
     """
-    pass
+    request_stream_usage = True

@@ -7,4 +7,4 @@ class OpenAIProvider(LocalAIProvider):
     OpenAI Provider is essentially identical to LocalAIProvider,
     as LocalAI is OpenAI-compatible. We just use this for clear typing/naming.
     """
-    pass
+    request_stream_usage = True

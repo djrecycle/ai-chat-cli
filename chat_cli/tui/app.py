@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import re
 import shlex
+from contextlib import suppress
 from datetime import datetime
+from pathlib import Path
 from textwrap import shorten, wrap
 
 from prompt_toolkit.application import Application, get_app
@@ -25,19 +27,30 @@ from prompt_toolkit.widgets import TextArea
 
 from ..clipboard_util import copy_to_system_clipboard
 from ..config import AppConfig, DEFAULT_SYSTEM_PROMPT, PROVIDER_HELP_TEXT, save_config
-from ..document_loader import DocumentLoadError, build_document_prompt, load_document
+from ..document_loader import (
+    IMAGE_EXTENSIONS,
+    DocumentLoadError,
+    build_document_prompt,
+    build_image_message,
+    load_document,
+)
 from ..history_store import (
     ChatSession,
+    create_project,
+    delete_project,
     delete_session,
+    list_projects,
     list_sessions,
     load_session,
+    rename_project,
     save_session,
     title_from_message,
 )
-from ..providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider
+from ..providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, estimate_token_usage
 from ..providers.base import ChatProvider
 from ..suggestions import ChatAutoSuggest
-from ..terminal_file_browser import FileBrowserState, handle_browser_input, render_browser_lines
+from ..system_monitor import ProcessResourceMonitor, ResourceStats
+from ..terminal_file_browser import FileBrowserState, handle_browser_input
 from ..ui import (
     sanitize_assistant_output,
     sanitize_visible_thinking,
@@ -69,10 +82,13 @@ class TuiChatApp:
         if not self.sessions:
             save_session(self.session)
             self.sessions = [self.session]
+        self.projects = list_projects()
+        self.active_project = self.session.project
+        self.expanded_projects: set[str] = {self.active_project}
 
         self.selected_message_index: int | None = None
         self.editing_message_index: int | None = None
-        self.status = "Fitur baru: /system untuk lihat, ubah, atau reset prompt aktif. Ketik /help untuk detail."
+        self.status = "Fitur baru: /rename untuk mengganti judul chat. Ketik /help untuk detail."
         self.mouse_enabled = True
         self.streaming = False
         self._stream_task: asyncio.Task[None] | None = None
@@ -83,6 +99,8 @@ class TuiChatApp:
         self.file_browser: FileBrowserState | None = None
         self.file_browser_question_parts: list[str] = []
         self.expanded_thinking_indices: set[int] = set()
+        self.resource_monitor = ProcessResourceMonitor()
+        self.resource_stats = ResourceStats()
 
         self.input = TextArea(
             height=4,
@@ -97,10 +115,24 @@ class TuiChatApp:
         self.input.buffer.accept_handler = self._accept_input
 
         self.header_control = FormattedTextControl(self._render_header)
+        self.header_window = Window(
+            self.header_control,
+            height=D(min=1, max=3),
+            wrap_lines=True,
+            always_hide_cursor=True,
+            style="class:header",
+        )
         self.sidebar_control = FormattedTextControl(self._render_sidebar, focusable=True)
         self.chat_control = FormattedTextControl(self._render_chat, focusable=True)
         self.toolbar_control = FormattedTextControl(self._render_toolbar, focusable=True)
         self.status_control = FormattedTextControl(self._render_status)
+        self.status_window = Window(
+            self.status_control,
+            height=D(min=1, max=2),
+            wrap_lines=True,
+            always_hide_cursor=True,
+            style="class:statusbar",
+        )
         self.chat_window = Window(
             self.chat_control,
             wrap_lines=True,
@@ -132,14 +164,14 @@ class TuiChatApp:
                 ),
                 HSplit(
                     [
-                        Window(self.header_control, height=1, style="class:header"),
+                        self.header_window,
                         Window(height=1, char="─", style="class:divider"),
                         self.chat_pane,
                         Window(height=1, char=" ", style="class:divider"),
                         Window(height=1, char="─", style="class:divider"),
                         Window(self.toolbar_control, height=1, style="class:toolbar"),
                         self.input,
-                        Window(self.status_control, height=1, style="class:statusbar"),
+                        self.status_window,
                     ]
                 ),
             ]
@@ -252,11 +284,19 @@ class TuiChatApp:
             ("/help", "tampilkan daftar perintah"),
             ("/new", "buat chat baru"),
             ("/delete", "hapus chat aktif"),
+            ("/rename <judul>", "ganti judul chat aktif"),
+            ("/project", "lihat project aktif dan daftar project"),
+            ("/project new <nama>", "buat folder project baru"),
+            ("/project <nama>", "buka folder project"),
+            ("/project move <nama>", "pindahkan chat aktif ke project"),
+            ("/project rename <nama>", "ganti nama project aktif"),
+            ("/project delete confirm", "hapus project aktif beserta semua chat"),
             ("/models [all]", "refresh daftar model"),
             ("/model <nama>", "ganti model"),
             (f"/provider {PROVIDER_HELP_TEXT}", "ganti backend"),
             ("/apikey <key>", "set api key"),
             ("/clear", "hapus chat saat ini"),
+            ("/stop", "hentikan jawaban AI yang sedang diproses"),
             ("/regen", "generate ulang jawaban"),
             ("/mouse on|off", "klik tombol / blok teks"),
             ("/system", "lihat system prompt aktif"),
@@ -275,7 +315,9 @@ class TuiChatApp:
         lines.extend(
             [
                 "",
-                "Shortcut utama: `Ctrl-N` chat baru, `Ctrl-Y` copy, `Ctrl-E` edit, `Ctrl-R` generate ulang, `F2` toggle mode klik/blok teks, `Ctrl-Q` keluar.",
+                "Shortcut utama: `Esc` hentikan jawaban, `Ctrl-N` chat baru, `Ctrl-Y` copy, `Ctrl-E` edit, `Ctrl-R` generate ulang, `F2` toggle mode klik/blok teks, `Ctrl-Q` keluar.",
+                "",
+                "Ikon: `⧉` salin, `✎` edit, `⚙` sistem, `✐` rename, `▣` project, `↻` ulang, `⌑` file, `▤` blok teks, `＋` baru, `×` hapus, `■` hentikan.",
             ]
         )
         self.session.messages.append(ChatMessage("assistant", "\n".join(lines)))
@@ -341,6 +383,10 @@ class TuiChatApp:
 
         @kb.add("escape")
         def _(event) -> None:
+            if self.streaming:
+                self._cancel_stream()
+                event.app.invalidate()
+                return
             self.editing_message_index = None
             self.selected_message_index = None
             self.input.text = ""
@@ -396,7 +442,9 @@ class TuiChatApp:
             return
 
         role = self.session.messages[index].role
-        self.session.messages[index] = ChatMessage(role, text)
+        self.session.messages[index] = ChatMessage(
+            role, text, images=self.session.messages[index].images
+        )
         self._render_cache.clear()
         if role == "user":
             del self.session.messages[index + 1 :]
@@ -417,24 +465,50 @@ class TuiChatApp:
         self.selected_message_index = assistant_index
         self._request_scroll_to_bottom()
         self.app.invalidate()
+        request_messages = self._api_messages()
 
         try:
             async for chunk in self.provider.chat_stream(
-                self._api_messages(),
+                request_messages,
                 model=self.cfg.active_model,
                 temperature=self.cfg.temperature,
             ):
                 current = self.session.messages[assistant_index]
                 self.session.messages[assistant_index] = ChatMessage(
-                    "assistant", current.content + chunk
+                    "assistant", current.content + chunk, images=current.images
                 )
                 self._request_scroll_to_bottom()
                 self.app.invalidate()
+        except asyncio.CancelledError:
+            current = self.session.messages[assistant_index]
+            if current.content.strip():
+                self._touch_session()
+            else:
+                self.session.messages.pop(assistant_index)
+                self.selected_message_index = (
+                    len(self.session.messages) - 1 if self.session.messages else None
+                )
+            self.status = "Jawaban AI dihentikan."
         except Exception as exc:
-            self.session.messages.pop()
+            self.session.messages.pop(assistant_index)
             self.status = f"Error: {exc}"
         else:
-            self.status = "Jawaban selesai. Klik pesan lalu Copy untuk menyalin."
+            current = self.session.messages[assistant_index]
+            usage = self.provider.last_usage or estimate_token_usage(
+                request_messages, current.content
+            )
+            self.session.messages[assistant_index] = ChatMessage(
+                "assistant",
+                current.content,
+                images=current.images,
+                token_usage=usage,
+            )
+            estimate_label = " estimasi" if usage.estimated else ""
+            self.status = (
+                f"Jawaban selesai | token{estimate_label}: "
+                f"masuk {usage.input_tokens} | keluar {usage.output_tokens} | "
+                f"total {usage.total_tokens}"
+            )
             self._touch_session()
         finally:
             self.streaming = False
@@ -455,7 +529,7 @@ class TuiChatApp:
                 else message.content
             )
             if content.strip() or message.role != "assistant":
-                messages.append(ChatMessage(message.role, content))
+                messages.append(ChatMessage(message.role, content, images=message.images))
         return messages
 
     async def _handle_command(self, text: str) -> None:
@@ -469,12 +543,15 @@ class TuiChatApp:
         if cmd == "/help":
             self._show_help_message()
             return
+        if cmd in ("/stop", "/hentikan"):
+            self.status = "Tidak ada jawaban AI yang sedang diproses."
+            return
         if cmd == "/clear":
             self.session.messages.clear()
             self.selected_message_index = None
             self.editing_message_index = None
             self._render_cache.clear()
-            self._touch_session("Chat baru")
+            self._touch_session("Chat baru", reset_title=True)
             self.status = "Riwayat buffer ini dikosongkan."
             return
         if cmd == "/new":
@@ -482,6 +559,104 @@ class TuiChatApp:
             return
         if cmd == "/delete":
             self._delete_current_session()
+            return
+        if cmd == "/rename":
+            new_title = text[len(parts[0]) :].strip()
+            if not new_title:
+                self.status = "Gunakan: /rename <judul chat>"
+                return
+            title = title_from_message(new_title, limit=80)
+            self._touch_session(title, manual_title=True)
+            self.status = f"Judul chat diubah menjadi: {title}"
+            return
+        if cmd == "/project":
+            args = text[len(parts[0]) :].strip()
+            if not args:
+                projects = ", ".join(self.projects)
+                self.status = f"Project aktif: {self.active_project} | Tersedia: {projects}"
+                return
+            action, _, value = args.partition(" ")
+            if action.lower() == "new":
+                if not value.strip():
+                    self.status = "Gunakan: /project new <nama>"
+                    return
+                project = create_project(value)
+                self.projects = list_projects()
+                self.active_project = project
+                self.expanded_projects.add(project)
+                self._new_session()
+                self.status = f"Project dibuat dan dibuka: {project}"
+                return
+            if action.lower() == "move":
+                if not value.strip():
+                    self.status = "Gunakan: /project move <nama>"
+                    return
+                project = create_project(value)
+                self.projects = list_projects()
+                self.session.project = project
+                self.active_project = project
+                self.expanded_projects.add(project)
+                self._touch_session()
+                self.status = f"Chat dipindahkan ke project: {project}"
+                return
+            if action.lower() == "rename":
+                if not value.strip():
+                    self.status = "Gunakan: /project rename <nama baru>"
+                    return
+                old_project = self.active_project
+                try:
+                    project = rename_project(old_project, value)
+                except ValueError as exc:
+                    self.status = str(exc)
+                    return
+                self.projects = list_projects()
+                self.sessions = list_sessions()
+                self.active_project = project
+                self.session = load_session(self.session.id) or self.session
+                self.expanded_projects.discard(old_project)
+                self.expanded_projects.add(project)
+                self._render_cache.clear()
+                self.status = f"Nama Project diubah: {old_project} → {project}"
+                self.app.invalidate()
+                return
+            if action.lower() == "delete":
+                if value.strip().casefold() != "confirm":
+                    self.status = "Untuk menghapus Project aktif dan semua chatnya, ketik: /project delete confirm"
+                    return
+                project = self.active_project
+                try:
+                    deleted = delete_project(project)
+                except ValueError as exc:
+                    self.status = str(exc)
+                    return
+                self.projects = list_projects()
+                self.sessions = list_sessions()
+                self.active_project = "Umum"
+                self.expanded_projects.discard(project)
+                self.expanded_projects.add(self.active_project)
+                replacement = next(
+                    (item for item in self.sessions if item.project == self.active_project),
+                    None,
+                )
+                self.session = replacement or ChatSession.new(self.active_project)
+                if replacement is None:
+                    save_session(self.session)
+                    self.sessions = list_sessions()
+                self.selected_message_index = None
+                self.editing_message_index = None
+                self.input.text = ""
+                self._render_cache.clear()
+                self.status = f"Project {project} dan {deleted} chat di dalamnya telah dihapus."
+                self.app.invalidate()
+                return
+            project = next(
+                (name for name in self.projects if name.casefold() == args.casefold()),
+                None,
+            )
+            if project is None:
+                self.status = f"Project tidak ditemukan: {args}. Gunakan /project new <nama>."
+                return
+            self._select_project(project)
             return
         if cmd == "/file":
             try:
@@ -500,18 +675,25 @@ class TuiChatApp:
             question_parts = args[2:]
 
             try:
-                document = load_document(file_path)
+                if self.cfg.provider in ("gemini", "ollama") and Path(file_path).suffix.lower() in IMAGE_EXTENSIONS:
+                    message = build_image_message(file_path, " ".join(question_parts))
+                    display_path = Path(file_path).expanduser()
+                else:
+                    document = load_document(file_path)
+                    message = ChatMessage(
+                        "user", build_document_prompt(document, " ".join(question_parts))
+                    )
+                    display_path = document.path
             except DocumentLoadError as exc:
                 self.status = f"Error: {exc}"
                 return
-            prompt = build_document_prompt(document, " ".join(question_parts))
-            self.session.messages.append(ChatMessage("user", prompt))
+            self.session.messages.append(message)
             self._touch_session(
-                title_from_message(f"File: {document.path.name}")
+                title_from_message(f"File: {display_path.name}")
                 if len(self.session.messages) == 1
                 else None
             )
-            self.status = f"Membaca file: {document.path}"
+            self.status = f"Mengirim gambar asli: {display_path}" if message.images else f"Membaca file: {display_path}"
             self._request_scroll_to_bottom()
             await self._stream_reply()
             return
@@ -631,14 +813,27 @@ class TuiChatApp:
             return
         self.status = "Command tidak dikenal. Ketik /help untuk daftar perintah."
 
-    def _touch_session(self, title: str | None = None) -> None:
-        self.session.touch(title)
+    def _touch_session(
+        self,
+        title: str | None = None,
+        *,
+        manual_title: bool = False,
+        reset_title: bool = False,
+    ) -> None:
+        self.session.touch(
+            title,
+            manual_title=manual_title,
+            reset_title=reset_title,
+        )
         save_session(self.session)
         self.sessions = list_sessions()
+        if self.session.project not in self.projects:
+            self.projects = list_projects()
 
     def _new_session(self) -> None:
         self._cancel_stream()
-        self.session = ChatSession.new()
+        self.expanded_projects.add(self.active_project)
+        self.session = ChatSession.new(self.active_project)
         save_session(self.session)
         self.sessions = list_sessions()
         self.selected_message_index = None
@@ -652,7 +847,17 @@ class TuiChatApp:
         self._cancel_stream()
         delete_session(self.session.id)
         self.sessions = list_sessions()
-        self.session = self.sessions[0] if self.sessions else ChatSession.new()
+        project_sessions = [
+            session for session in self.sessions if session.project == self.active_project
+        ]
+        if project_sessions:
+            self.session = project_sessions[0]
+        elif self.sessions:
+            self.session = self.sessions[0]
+        else:
+            self.session = ChatSession.new(self.active_project)
+        self.active_project = self.session.project
+        self.expanded_projects.add(self.active_project)
         if not self.sessions:
             save_session(self.session)
             self.sessions = [self.session]
@@ -674,11 +879,81 @@ class TuiChatApp:
             self.app.invalidate()
             return
         self.session = session
+        self.active_project = session.project
+        self.expanded_projects.add(session.project)
         self.selected_message_index = None
         self.editing_message_index = None
         self.input.text = ""
         self._render_cache.clear()
         self.status = f"Membuka chat: {session.title}"
+        self.app.invalidate()
+
+    def _select_project(self, project: str) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum pindah project."
+            self.app.invalidate()
+            return
+        self.active_project = project
+        self.expanded_projects.add(project)
+        session = next(
+            (item for item in self.sessions if item.project == project),
+            None,
+        )
+        if session is None:
+            self._new_session()
+            self.status = f"Project dibuka: {project}. Chat baru dibuat."
+            return
+        self._load_session(session.id)
+        self.status = f"Project dibuka: {project}"
+
+    def _toggle_project(self, project: str) -> None:
+        if project in self.expanded_projects:
+            self.expanded_projects.remove(project)
+            self.status = f"Folder diciutkan: {project}"
+            self.app.invalidate()
+            return
+        if self.streaming and project != self.active_project:
+            self.status = "Tunggu jawaban selesai sebelum pindah project."
+            self.app.invalidate()
+            return
+        self.expanded_projects.add(project)
+        if project != self.active_project:
+            self._select_project(project)
+        else:
+            self.status = f"Folder dibuka: {project}"
+            self.app.invalidate()
+
+    def _new_project_prompt(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum membuat project."
+            self.app.invalidate()
+            return
+        self.input.text = "/project new "
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = "Ketik nama project lalu tekan Enter."
+        self.app.invalidate()
+
+    def _rename_project_prompt(self) -> None:
+        if self.active_project == "Umum":
+            self.status = "Project Umum tidak dapat diganti namanya."
+            self.app.invalidate()
+            return
+        self.input.text = "/project rename "
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = f"Ketik nama baru untuk Project {self.active_project}, lalu tekan Enter."
+        self.app.invalidate()
+
+    def _delete_project_prompt(self) -> None:
+        if self.active_project == "Umum":
+            self.status = "Project Umum tidak dapat dihapus."
+            self.app.invalidate()
+            return
+        self.input.text = "/project delete "
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = f"PERINGATAN: semua chat di {self.active_project} akan dihapus. Ketik confirm lalu Enter."
         self.app.invalidate()
 
     async def _refresh_models(self) -> None:
@@ -769,6 +1044,19 @@ class TuiChatApp:
         self.status = "Edit system prompt di input bawah lalu tekan Enter. Gunakan /save jika ingin permanen."
         self.app.invalidate()
 
+    def _rename_session(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum mengganti judul chat."
+            self.app.invalidate()
+            return
+        self.editing_message_index = None
+        self.selected_message_index = None
+        self.input.text = f"/rename {self.session.title}"
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = "Ubah judul chat di input bawah lalu tekan Enter."
+        self.app.invalidate()
+
     def _edit_selected(self) -> None:
         message = self._selected_message()
         if message is None:
@@ -853,7 +1141,11 @@ class TuiChatApp:
     def _cancel_stream(self) -> None:
         if self._stream_task and not self._stream_task.done():
             self._stream_task.cancel()
-        self.streaming = False
+            self.status = "Menghentikan jawaban AI..."
+        elif self.streaming:
+            self.status = "Menghentikan jawaban AI..."
+        else:
+            self.status = "Tidak ada jawaban AI yang sedang diproses."
 
     def _scroll_chat(self, delta: int) -> None:
         self.chat_pane.vertical_scroll = min(
@@ -911,6 +1203,11 @@ class TuiChatApp:
             return
         self._stream_task = asyncio.create_task(self._submit("/file"))
 
+    def _click_file_browser_entry(self, value: str) -> None:
+        if self.file_browser is None or self.streaming:
+            return
+        self._stream_task = asyncio.create_task(self._handle_file_browser_input(value))
+
     async def _handle_file_browser_input(self, text: str) -> None:
         if self.file_browser is None:
             return
@@ -936,20 +1233,25 @@ class TuiChatApp:
         self.file_browser = None
         self.file_browser_question_parts = []
         try:
-            document = load_document(str(selected))
+            if self.cfg.provider in ("gemini", "ollama") and selected.suffix.lower() in IMAGE_EXTENSIONS:
+                message = build_image_message(str(selected), " ".join(question_parts))
+            else:
+                document = load_document(str(selected))
+                message = ChatMessage(
+                    "user", build_document_prompt(document, " ".join(question_parts))
+                )
         except DocumentLoadError as exc:
             self.status = f"Error: {exc}"
             self.app.invalidate()
             return
 
-        prompt = build_document_prompt(document, " ".join(question_parts))
-        self.session.messages.append(ChatMessage("user", prompt))
+        self.session.messages.append(message)
         self._touch_session(
-            title_from_message(f"File: {document.path.name}")
+            title_from_message(f"File: {selected.name}")
             if len(self.session.messages) == 1
             else None
         )
-        self.status = f"Membaca file: {document.path}"
+        self.status = f"Mengirim gambar asli: {selected}" if message.images else f"Membaca file: {selected}"
         self._request_scroll_to_bottom()
         await self._stream_reply()
 
@@ -964,6 +1266,8 @@ class TuiChatApp:
             ("class:header.value", state),
             ("class:header.meta", " | chat: "),
             ("class:header.value", title),
+            ("class:header.meta", " | project: "),
+            ("class:header.value", shorten(self.active_project, width=18, placeholder="...")),
             ("class:header.meta", " | provider: "),
             ("class:header.value", self.cfg.provider),
             ("class:header.meta", " | model: "),
@@ -978,50 +1282,105 @@ class TuiChatApp:
         mode = "EDIT" if self.editing_message_index is not None else "CHAT"
         if self.streaming:
             mode = "STREAM"
-        help_text = "F2 blok/klik | Ctrl-Y copy | Ctrl-E edit | Ctrl-R ulang | Ctrl-Q keluar"
+        stats = self.resource_stats
+        latest_usage = next(
+            (
+                message.token_usage
+                for message in reversed(self.session.messages)
+                if message.token_usage is not None
+            ),
+            None,
+        )
+        token_text = (
+            f"token {latest_usage.total_tokens}"
+            if latest_usage is not None
+            else "token -"
+        )
+        help_text = (
+            f"CPU {stats.cpu_percent:.1f}% | RAM {stats.memory_mb:.0f} MB "
+            f"({stats.memory_percent:.1f}%) | {token_text} | Ctrl-Q keluar"
+        )
         return [
             ("class:status.mode", f" {mode} "),
-            ("class:status.text", f" {self.status}"),
-            ("class:status.help", f"   {help_text}"),
+            ("class:status.help", f" {help_text}"),
+            ("class:status.text", f" | {self.status}"),
         ]
 
     def _render_sidebar(self) -> AnyFormattedText:
         fragments = [("class:sidebar.title", "  DJ Chat Ai\n")]
         fragments.append(("class:sidebar.meta", "  Terminal AI assistant\n\n"))
         fragments.append(("class:sidebar.section", "  System prompt\n"))
-        fragments.append(
-            ("class:button.hot", " [Edit System] ", self._click(self._edit_system_prompt))
-        )
-        fragments.append(("class:sidebar.meta", "\n  /system untuk lihat atau ubah\n"))
         system_prompt_preview = " ".join(self.cfg.system_prompt.strip().split()) or "(kosong)"
-        for line in wrap(system_prompt_preview, width=24)[:3]:
+        for line in wrap(system_prompt_preview, width=22)[:3]:
             fragments.append(("class:sidebar.meta", f"  {line}\n"))
         if len(system_prompt_preview) > 72:
             fragments.append(("class:sidebar.meta", "  ...\n"))
-        fragments.append(("class:sidebar.meta", "\n"))
-        fragments.append(("class:sidebar.section", "  Chat history\n"))
-        fragments.append(("class:sidebar.meta", "  Ctrl-N new  /delete hapus\n\n"))
-        for session in self.sessions[:12]:
-            active = session.id == self.session.id
-            style = "class:sidebar.active" if active else "class:sidebar.item"
-            title = shorten(session.title, width=22, placeholder="...")
-            updated = _format_time(session.updated_at)
-            prefix = "▸" if active else " "
+        fragments.append(("class:sidebar.meta", "  ──────────────────────\n  "))
+        fragments.append(
+            ("class:button.hot", " [⚙] ", self._click(self._edit_system_prompt))
+        )
+        fragments.append(("class:sidebar.meta", "  /system\n\n"))
+        fragments.append(("class:sidebar.section", "  Projects & chats\n"))
+        for project in self.projects:
+            project_sessions = [
+                session for session in self.sessions if session.project == project
+            ]
+            project_active = project == self.active_project
+            project_expanded = project in self.expanded_projects
+            project_style = "class:sidebar.active" if project_active else "class:sidebar.section"
+            project_prefix = "▾" if project_expanded else "▸"
             fragments.append(
                 (
-                    style,
-                    f" {prefix} {title:<22}\n",
-                    self._click(lambda sid=session.id: self._load_session(sid)),
+                    project_style,
+                    f" {project_prefix} ▣ {shorten(project, width=15, placeholder='...')}"
+                    f" ({len(project_sessions)})\n",
+                    self._click(lambda name=project: self._toggle_project(name)),
                 )
             )
-            fragments.append(
-                ("class:sidebar.meta", f"   {updated}  {len(session.messages)} lines\n")
-            )
-        if len(self.sessions) > 12:
-            fragments.append(("class:sidebar.meta", f"   +{len(self.sessions) - 12} buffers\n"))
+            if not project_expanded:
+                continue
+            for session in project_sessions[:8]:
+                active = session.id == self.session.id
+                style = "class:sidebar.active" if active else "class:sidebar.item"
+                title = shorten(session.title, width=18, placeholder="...")
+                updated = _format_time(session.updated_at)
+                prefix = "●" if active else " "
+                fragments.append(
+                    (
+                        style,
+                        f"   {prefix} {title:<18}\n",
+                        self._click(lambda sid=session.id: self._load_session(sid)),
+                    )
+                )
+                fragments.append(
+                    ("class:sidebar.meta", f"   {updated}  {len(session.messages)} pesan\n")
+                )
+            if len(project_sessions) > 8:
+                fragments.append(
+                    ("class:sidebar.meta", f"     +{len(project_sessions) - 8} chat lain\n")
+                )
+
+        fragments.append(("class:sidebar.meta", "  ──────────────────────\n  "))
+        fragments.append(
+            ("class:button.hot", " ＋ ", self._click(self._new_project_prompt))
+        )
+        fragments.append(("class:sidebar.meta", " "))
+        fragments.append(
+            ("class:button", " ✎ ", self._click(self._rename_project_prompt))
+        )
+        fragments.append(("class:sidebar.meta", " "))
+        fragments.append(
+            ("class:button.danger", " × ", self._click(self._delete_project_prompt))
+        )
+        fragments.append(("class:sidebar.meta", " "))
+        fragments.append(
+            ("class:button.hot", " ✐ ", self._click(self._rename_session))
+        )
+        fragments.append(("class:sidebar.meta", "\n  ＋ baru   ✎ project\n  × hapus  ✐ chat\n"))
 
         fragments.append(("class:sidebar.section", "\n  Models\n"))
-        fragments.append(("class:sidebar.meta", f"  {self.cfg.provider} | /models refresh\n"))
+        provider = shorten(self.cfg.provider, width=8, placeholder="...")
+        fragments.append(("class:sidebar.meta", f"  {provider} | /models\n"))
         if self.models_error:
             fragments.append(("class:sidebar.meta", "  /models untuk refresh\n"))
             fragments.append(
@@ -1037,11 +1396,11 @@ class TuiChatApp:
                 active = model == self.cfg.active_model
                 style = "class:sidebar.model.active" if active else "class:sidebar.model"
                 prefix = "●" if active else "○"
-                label = shorten(model, width=22, placeholder="...")
+                label = shorten(model, width=20, placeholder="...")
                 fragments.append(
                     (
                         style,
-                        f" {prefix} {label:<22}\n",
+                        f" {prefix} {label:<20}\n",
                         self._click(lambda name=model: self._select_model(name)),
                     )
                 )
@@ -1059,11 +1418,53 @@ class TuiChatApp:
             return fragments
 
         if self.file_browser is not None:
-            lines = render_browser_lines(self.file_browser, limit=40)
             fragments = [("", "\n")]
-            for line in lines:
-                style = "class:message.label.assistant" if line == "File browser" else "class:message.assistant"
-                fragments.append((style, f"    {line}\n"))
+            fragments.extend(
+                [
+                    ("class:message.label.assistant", "    File browser\n"),
+                    ("class:message.assistant", f"    Folder: {self.file_browser.cwd}\n"),
+                    (
+                        "class:message.assistant",
+                        f"    Filter: {self.file_browser.filter_text or '-'}\n\n",
+                    ),
+                    (
+                        "class:message.assistant",
+                        "    Klik folder/file untuk membuka atau memilih. "
+                        "Keyboard: .. naik, /teks filter, / clear, q batal.\n\n",
+                    ),
+                    (
+                        "class:button",
+                        "      0  [D] ../\n",
+                        self._click(lambda: self._click_file_browser_entry("0")),
+                    ),
+                ]
+            )
+
+            entries = self.file_browser.entries()
+            for index, entry in enumerate(entries[:40], start=1):
+                icon = "[D]" if entry.is_dir else "[F]"
+                fragments.append(
+                    (
+                        "class:button",
+                        f"    {index:>3}  {icon} {entry.label}\n",
+                        self._click(
+                            lambda selected_index=index: self._click_file_browser_entry(
+                                str(selected_index)
+                            )
+                        ),
+                    )
+                )
+
+            remaining = len(entries) - 40
+            if remaining > 0:
+                fragments.append(
+                    (
+                        "class:message.assistant.dim",
+                        f"    ... {remaining} item lain disembunyikan; gunakan filter.\n",
+                    )
+                )
+            if not entries:
+                fragments.append(("class:message.assistant.dim", "    (kosong)\n"))
             fragments.append(("", "\n"))
             self._chat_line_count = _count_fragment_lines(fragments)
             self._apply_pending_scroll()
@@ -1094,6 +1495,7 @@ class TuiChatApp:
                 is_waiting_reply,
                 self.cfg.show_thinking,
                 (index in self.expanded_thinking_indices),
+                message.token_usage.total_tokens if message.token_usage else None,
             )
 
             if cache_key in self._render_cache and not is_waiting_reply:
@@ -1149,6 +1551,17 @@ class TuiChatApp:
                                 toggle_handler=toggle_handler,
                             )
                         )
+                        if message.token_usage:
+                            usage = message.token_usage
+                            marker = "~" if usage.estimated else ""
+                            msg_fragments.append(
+                                (
+                                    "class:message.meta",
+                                    f"    Token: masuk {marker}{usage.input_tokens} | "
+                                    f"keluar {marker}{usage.output_tokens} | "
+                                    f"total {marker}{usage.total_tokens}\n",
+                                )
+                            )
                         msg_fragments.extend(self._render_message_actions(index))
                 else:
                     msg_fragments.extend(_render_plain_message(text or "...", style, handler, content_width))
@@ -1187,6 +1600,7 @@ class TuiChatApp:
                 message.content,
                 width,
                 self.cfg.show_thinking,
+                message.token_usage.total_tokens if message.token_usage else None,
             )
 
             if cache_key in self._render_cache and not is_waiting_reply:
@@ -1208,6 +1622,17 @@ class TuiChatApp:
                 msg_fragments.extend(
                     _render_selectable_text(content or "...", "class:message.assistant", width)
                 )
+                if message.token_usage:
+                    usage = message.token_usage
+                    marker = "~" if usage.estimated else ""
+                    msg_fragments.append(
+                        (
+                            "class:message.meta",
+                            f"Token: masuk {marker}{usage.input_tokens} | "
+                            f"keluar {marker}{usage.output_tokens} | "
+                            f"total {marker}{usage.total_tokens}\n",
+                        )
+                    )
                 if not is_waiting_reply:
                     self._render_cache[cache_key] = msg_fragments
 
@@ -1224,13 +1649,13 @@ class TuiChatApp:
         meta = " aktif" if selected else ""
         return [
             ("", "    "),
-            (action_style, " [Copy] ", self._click(lambda i=index: self._copy_message(i))),
+            (action_style, " [⧉] ", self._click(lambda i=index: self._copy_message(i))),
             ("", " "),
-            (action_style, " [Edit] ", self._click(lambda i=index: self._edit_message(i))),
+            (action_style, " [✎] ", self._click(lambda i=index: self._edit_message(i))),
             ("", " "),
             (
                 action_style,
-                " [Generate ulang] ",
+                " [↻] ",
                 self._click(lambda i=index: self._regenerate_message(i)),
             ),
             ("class:message.meta", f" jawaban{meta}\n"),
@@ -1244,7 +1669,7 @@ class TuiChatApp:
             "",
             "Mulai dengan mengetik pesan di bawah, atau gunakan /file untuk membaca dokumen.",
             "",
-            "Fitur baru: pakai /system untuk melihat, mengubah, atau reset system prompt aktif.",
+            "Fitur baru: pakai /rename untuk mengganti judul chat aktif.",
         ]
         shortcuts = [
             ("Right/Ctrl-F", "terima suggestion"),
@@ -1253,6 +1678,7 @@ class TuiChatApp:
             ("Ctrl-Y", "copy pesan terpilih"),
             ("Ctrl-E", "edit pesan terpilih"),
             ("Ctrl-R", "generate ulang jawaban"),
+            ("Esc", "hentikan jawaban AI"),
             ("F2", "toggle blok teks / klik"),
             ("PgUp/PgDn", "scroll chat"),
             ("Ctrl-Q", "keluar"),
@@ -1301,26 +1727,37 @@ class TuiChatApp:
                 ("class:message.meta", " drag seleksi | F2 mode klik"),
             ]
 
+        if self.streaming:
+            return [
+                ("class:button.danger", " [■] ", self._click(self._cancel_stream)),
+                ("", "   "),
+                ("class:message.meta", "AI sedang menjawab | Esc untuk hentikan"),
+            ]
+
         return [
-            ("class:button.hot", " [Copy] ", self._click(self._copy_selected)),
+            ("class:button.hot", " [⧉] ", self._click(self._copy_selected)),
             ("", " "),
-            ("class:button.hot", " [Edit] ", self._click(self._edit_selected)),
+            ("class:button.hot", " [✎] ", self._click(self._edit_selected)),
             ("", " "),
-            ("class:button.hot", " [Edit System] ", self._click(self._edit_system_prompt)),
+            ("class:button.hot", " [⚙] ", self._click(self._edit_system_prompt)),
             ("", " "),
-            ("class:button.hot", " [Generate ulang] ", self._click(self._regenerate_selected)),
+            ("class:button.hot", " [✐] ", self._click(self._rename_session)),
             ("", " "),
-            ("class:button.hot", " [File] ", self._click(self._pick_file_from_toolbar)),
+            ("class:button.hot", " [▣] ", self._click(self._new_project_prompt)),
             ("", " "),
-            ("class:button", " [Blok teks] ", self._click(lambda: self._set_mouse_mode(False))),
+            ("class:button.hot", " [↻] ", self._click(self._regenerate_selected)),
             ("", " "),
-            ("class:button", " [New] ", self._click(self._new_session)),
+            ("class:button.hot", " [⌑] ", self._click(self._pick_file_from_toolbar)),
             ("", " "),
-            ("class:button.danger", " [Delete] ", self._click(self._delete_current_session)),
+            ("class:button", " [▤] ", self._click(lambda: self._set_mouse_mode(False))),
+            ("", " "),
+            ("class:button", " [＋] ", self._click(self._new_session)),
+            ("", " "),
+            ("class:button.danger", " [×] ", self._click(self._delete_current_session)),
             ("", "   "),
             (
                 "class:message.meta",
-                "F2 blok teks | /mouse on klik | /regen ulang",
+                "Ikon aksi | F2 blok teks | /help keterangan",
             ),
         ]
 
@@ -1333,7 +1770,19 @@ class TuiChatApp:
             )
         else:
             await self._refresh_models()
-        await self.app.run_async()
+        monitor_task = asyncio.create_task(self._monitor_resources())
+        try:
+            await self.app.run_async()
+        finally:
+            monitor_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await monitor_task
+
+    async def _monitor_resources(self) -> None:
+        while True:
+            self.resource_stats = self.resource_monitor.sample()
+            self.app.invalidate()
+            await asyncio.sleep(1.0)
 
 
 def _format_time(value: str) -> str:

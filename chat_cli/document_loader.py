@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import mimetypes
 from dataclasses import dataclass
 from pathlib import Path
 
+from .providers import ChatMessage, ImageAttachment
+
 
 MAX_DOCUMENT_CHARS = 60_000
+MAX_INLINE_IMAGE_BYTES = 15 * 1024 * 1024
 IMAGE_EXTENSIONS = {
     ".bmp",
     ".gif",
@@ -69,6 +74,51 @@ def build_document_prompt(document: LoadedDocument, question: str | None = None)
     )
 
 
+def build_image_message(path_text: str, question: str | None = None) -> ChatMessage:
+    """Build a multimodal message containing the original image bytes."""
+    path = Path(path_text).expanduser()
+    if not path.exists():
+        raise DocumentLoadError(f"File tidak ditemukan: {path}")
+    if not path.is_file():
+        raise DocumentLoadError(f"Path bukan file: {path}")
+    if path.suffix.lower() not in IMAGE_EXTENSIONS:
+        raise DocumentLoadError(f"File bukan format gambar yang didukung: {path}")
+
+    try:
+        raw = path.read_bytes()
+    except OSError as exc:
+        raise DocumentLoadError(f"Gagal membaca gambar: {path}") from exc
+    if not raw:
+        raise DocumentLoadError(f"File gambar kosong: {path}")
+    if len(raw) > MAX_INLINE_IMAGE_BYTES:
+        size_mb = len(raw) / (1024 * 1024)
+        raise DocumentLoadError(
+            f"Gambar terlalu besar ({size_mb:.1f} MB). Maksimum 15 MB untuk upload langsung."
+        )
+
+    try:
+        from PIL import Image
+
+        with Image.open(path) as image:
+            image.verify()
+    except ImportError as exc:
+        raise DocumentLoadError("Validasi gambar membutuhkan paket `Pillow`.") from exc
+    except OSError as exc:
+        raise DocumentLoadError(f"File bukan gambar valid: {path}") from exc
+
+    mime_type = mimetypes.guess_type(path.name)[0] or "application/octet-stream"
+    prompt = question.strip() if question and question.strip() else (
+        "Jelaskan secara menyeluruh apa yang terlihat pada gambar ini."
+    )
+    visible_content = f"[Gambar: {path.name}]\n{prompt}"
+    attachment = ImageAttachment(
+        name=path.name,
+        mime_type=mime_type,
+        data=base64.b64encode(raw).decode("ascii"),
+    )
+    return ChatMessage("user", visible_content, images=[attachment])
+
+
 def _read_text(path: Path, *, max_chars: int) -> str:
     raw = path.read_bytes()
     if b"\x00" in raw[:4096]:
@@ -97,10 +147,25 @@ def _read_pdf(path: Path) -> str:
                 "`pip install pypdf` atau `pip install PyPDF2`."
             ) from exc
 
-    reader = PdfReader(str(path))
-    pages = []
-    for page in reader.pages:
-        pages.append(page.extract_text() or "")
+    try:
+        reader = PdfReader(str(path))
+        if reader.is_encrypted:
+            try:
+                unlocked = reader.decrypt("")
+            except Exception as exc:
+                raise DocumentLoadError(
+                    f"PDF dilindungi kata sandi dan tidak bisa dibaca: {path}"
+                ) from exc
+            if not unlocked:
+                raise DocumentLoadError(
+                    f"PDF dilindungi kata sandi dan tidak bisa dibaca: {path}"
+                )
+
+        pages = [page.extract_text() or "" for page in reader.pages]
+    except DocumentLoadError:
+        raise
+    except Exception as exc:
+        raise DocumentLoadError(f"Gagal membaca PDF: {path}. {exc}") from exc
     text = "\n\n".join(pages).strip()
     if not text:
         raise DocumentLoadError(
@@ -119,8 +184,18 @@ def _read_docx(path: Path) -> str:
             "Membaca DOCX butuh paket tambahan: `pip install python-docx`."
         ) from exc
 
-    doc = Document(str(path))
-    return "\n".join(paragraph.text for paragraph in doc.paragraphs)
+    try:
+        doc = Document(str(path))
+    except Exception as exc:
+        raise DocumentLoadError(f"Gagal membaca DOCX: {path}. {exc}") from exc
+
+    parts = [paragraph.text for paragraph in doc.paragraphs if paragraph.text.strip()]
+    for table in doc.tables:
+        for row in table.rows:
+            cells = [cell.text.strip() for cell in row.cells]
+            if any(cells):
+                parts.append(" | ".join(cells))
+    return "\n".join(parts)
 
 
 def _read_image(path: Path) -> str:
@@ -145,14 +220,18 @@ def _read_image(path: Path) -> str:
         raise DocumentLoadError(f"Gagal membuka gambar: {path}") from exc
 
     try:
-        text = pytesseract.image_to_string(image, lang="ind+eng")
+        with image:
+            try:
+                text = pytesseract.image_to_string(image, lang="ind+eng")
+            except pytesseract.TesseractError:
+                text = pytesseract.image_to_string(image)
     except pytesseract.TesseractNotFoundError as exc:
         raise DocumentLoadError(
             "Aplikasi Tesseract belum ditemukan. Install dulu, misalnya: "
             "`sudo apt install tesseract-ocr tesseract-ocr-ind`."
         ) from exc
-    except pytesseract.TesseractError:
-        text = pytesseract.image_to_string(image)
+    except Exception as exc:
+        raise DocumentLoadError(f"Gagal menjalankan OCR pada gambar: {path}. {exc}") from exc
 
     text = text.strip()
     if not text:
