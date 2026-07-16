@@ -3,7 +3,7 @@
 ![Tampilan DJ Chat Ai](./Screenshot_2.png)
 ![Tampilan DJ Chat Ai 2](./Screenshot_1.png)
 
-Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **DeepSeek**, **Ollama**, dan **LocalAI**.
+DJ Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **DeepSeek**, **Ollama**, dan **LocalAI**.
 
 ## Fitur Utama
 
