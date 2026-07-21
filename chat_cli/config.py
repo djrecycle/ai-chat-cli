@@ -12,6 +12,16 @@ CONFIG_DIR = Path.home() / ".config" / "ai-chat-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 SUPPORTED_PROVIDERS = ("ollama", "localai", "openai", "gemini", "deepseek")
 PROVIDER_HELP_TEXT = "|".join(SUPPORTED_PROVIDERS)
+SUPPORTED_THEMES = ("dark", "midnight", "forest", "light")
+ACCENT_COLORS = {
+    "amber": "#fbbf24",
+    "cyan": "#22d3ee",
+    "green": "#4ade80",
+    "blue": "#60a5fa",
+    "purple": "#c084fc",
+    "pink": "#f472b6",
+    "red": "#f87171",
+}
 
 DEFAULT_CONFIG: dict[str, Any] = {
     "provider": "ollama",
@@ -42,6 +52,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "system_prompt": "Kamu adalah asisten AI yang ramah dan membantu. Jawab dengan jelas dalam bahasa yang dipakai pengguna.",
     "temperature": 0.7,
     "show_thinking": True,
+    "theme": "dark",
+    "accent": "amber",
 }
 DEFAULT_SYSTEM_PROMPT = str(DEFAULT_CONFIG["system_prompt"])
 
@@ -66,6 +78,8 @@ class AppConfig:
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     temperature: float = 0.7
     show_thinking: bool = True
+    theme: str = "dark"
+    accent: str = "amber"
 
     @property
     def active_base_url(self) -> str:
@@ -126,6 +140,14 @@ def load_config() -> AppConfig:
     openai = data.get("openai") or {}
     gemini = data.get("gemini") or {}
     deepseek = data.get("deepseek") or {}
+    try:
+        theme = normalize_theme(str(data.get("theme", DEFAULT_CONFIG["theme"])))
+    except ValueError:
+        theme = str(DEFAULT_CONFIG["theme"])
+    try:
+        accent = normalize_accent(str(data.get("accent", DEFAULT_CONFIG["accent"])))
+    except ValueError:
+        accent = str(DEFAULT_CONFIG["accent"])
 
     return AppConfig(
         provider=str(data.get("provider", "ollama")),
@@ -146,6 +168,8 @@ def load_config() -> AppConfig:
         system_prompt=str(data.get("system_prompt", DEFAULT_SYSTEM_PROMPT)),
         temperature=float(data.get("temperature", 0.7)),
         show_thinking=bool(data.get("show_thinking", DEFAULT_CONFIG["show_thinking"])),
+        theme=theme,
+        accent=accent,
     )
 
 
@@ -180,6 +204,39 @@ def save_config(cfg: AppConfig) -> None:
         "system_prompt": cfg.system_prompt,
         "temperature": cfg.temperature,
         "show_thinking": cfg.show_thinking,
+        "theme": normalize_theme(cfg.theme),
+        "accent": normalize_accent(cfg.accent),
     }
     with CONFIG_FILE.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def normalize_theme(value: str) -> str:
+    theme = value.strip().casefold()
+    if theme not in SUPPORTED_THEMES:
+        raise ValueError(
+            f"Tema tidak dikenal: {value}. Pilih: {', '.join(SUPPORTED_THEMES)}"
+        )
+    return theme
+
+
+def normalize_accent(value: str) -> str:
+    accent = value.strip().casefold()
+    if accent in ACCENT_COLORS:
+        return accent
+    if len(accent) == 7 and accent.startswith("#"):
+        try:
+            int(accent[1:], 16)
+        except ValueError:
+            pass
+        else:
+            return accent
+    raise ValueError(
+        "Aksen tidak valid. Gunakan nama preset "
+        f"({', '.join(ACCENT_COLORS)}) atau HEX seperti #ff8800."
+    )
+
+
+def resolve_accent_color(value: str) -> str:
+    accent = normalize_accent(value)
+    return ACCENT_COLORS.get(accent, accent)

@@ -26,7 +26,17 @@ from prompt_toolkit.mouse_events import MouseEvent, MouseEventType
 from prompt_toolkit.widgets import TextArea
 
 from ..clipboard_util import copy_to_system_clipboard
-from ..config import AppConfig, DEFAULT_SYSTEM_PROMPT, PROVIDER_HELP_TEXT, save_config
+from ..config import (
+    ACCENT_COLORS,
+    SUPPORTED_THEMES,
+    AppConfig,
+    DEFAULT_SYSTEM_PROMPT,
+    PROVIDER_HELP_TEXT,
+    normalize_accent,
+    normalize_theme,
+    resolve_accent_color,
+    save_config,
+)
 from ..document_loader import (
     IMAGE_EXTENSIONS,
     DocumentLoadError,
@@ -36,14 +46,21 @@ from ..document_loader import (
 )
 from ..history_store import (
     ChatSession,
+    MAX_PROJECT_REFERENCES,
+    MAX_PROJECT_REFERENCE_CHARS,
+    add_project_reference,
+    compose_project_system_prompt,
     create_project,
     delete_project,
     delete_session,
+    get_project_settings,
     list_projects,
     list_sessions,
     load_session,
+    remove_project_reference,
     rename_project,
     save_session,
+    set_project_system_prompt,
     title_from_message,
 )
 from ..providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, estimate_token_usage
@@ -69,6 +86,79 @@ TUI_LOGO = [
     "|____/  \\___/  \\____|_| |_|\\__,_|\\__/_/   \\_\\___|",
 ]
 
+THEME_PALETTES = {
+    "dark": {
+        "bg": "#0b1120",
+        "panel": "#111827",
+        "bar": "#0f172a",
+        "surface": "#1f2937",
+        "border": "#374151",
+        "code_border": "#4b5563",
+        "text": "#d1d5db",
+        "bright": "#f3f4f6",
+        "muted": "#9ca3af",
+        "secondary": "#5eead4",
+        "blue": "#93c5fd",
+        "danger": "#fca5a5",
+        "thinking_body": "#fde68a",
+    },
+    "midnight": {
+        "bg": "#080b18",
+        "panel": "#10162a",
+        "bar": "#0b1020",
+        "surface": "#17213a",
+        "border": "#2a3b5f",
+        "code_border": "#42567d",
+        "text": "#d8e2ff",
+        "bright": "#f2f5ff",
+        "muted": "#8492b5",
+        "secondary": "#7dd3fc",
+        "blue": "#93c5fd",
+        "danger": "#fda4af",
+        "thinking_body": "#fde68a",
+    },
+    "forest": {
+        "bg": "#07130f",
+        "panel": "#0d1f18",
+        "bar": "#0a1914",
+        "surface": "#163126",
+        "border": "#2e5142",
+        "code_border": "#466b5a",
+        "text": "#d7e8df",
+        "bright": "#f0faf5",
+        "muted": "#86a394",
+        "secondary": "#6ee7b7",
+        "blue": "#93c5fd",
+        "danger": "#fca5a5",
+        "thinking_body": "#fde68a",
+    },
+    "light": {
+        "bg": "#f8fafc",
+        "panel": "#eef2f7",
+        "bar": "#e2e8f0",
+        "surface": "#d8e1ec",
+        "border": "#94a3b8",
+        "code_border": "#64748b",
+        "text": "#334155",
+        "bright": "#0f172a",
+        "muted": "#64748b",
+        "secondary": "#0f766e",
+        "blue": "#2563eb",
+        "danger": "#b91c1c",
+        "thinking_body": "#92400e",
+    },
+}
+
+LIGHT_ACCENT_COLORS = {
+    "amber": "#b45309",
+    "cyan": "#0e7490",
+    "green": "#15803d",
+    "blue": "#1d4ed8",
+    "purple": "#7e22ce",
+    "pink": "#be185d",
+    "red": "#b91c1c",
+}
+
 
 class TuiChatApp:
     """Interactive terminal app with mouse-aware message actions."""
@@ -89,6 +179,7 @@ class TuiChatApp:
         self.selected_message_index: int | None = None
         self.editing_message_index: int | None = None
         self.status = "Fitur baru: /rename untuk mengganti judul chat. Ketik /help untuk detail."
+        self.hover_hint: str | None = None
         self.mouse_enabled = True
         self.streaming = False
         self._stream_task: asyncio.Task[None] | None = None
@@ -97,6 +188,7 @@ class TuiChatApp:
         self._chat_line_count = 1
         self._scroll_to_bottom_pending = True
         self.file_browser: FileBrowserState | None = None
+        self.file_browser_mode = "chat"
         self.file_browser_question_parts: list[str] = []
         self.expanded_thinking_indices: set[int] = set()
         self.resource_monitor = ProcessResourceMonitor()
@@ -203,68 +295,90 @@ class TuiChatApp:
     def _style(self):
         from prompt_toolkit.styles import Style
 
+        theme = normalize_theme(self.cfg.theme)
+        palette = THEME_PALETTES[theme]
+        accent = (
+            LIGHT_ACCENT_COLORS.get(self.cfg.accent, resolve_accent_color(self.cfg.accent))
+            if theme == "light"
+            else resolve_accent_color(self.cfg.accent)
+        )
+        bg = palette["bg"]
+        panel = palette["panel"]
+        bar = palette["bar"]
+        surface = palette["surface"]
+        border = palette["border"]
+        code_border = palette["code_border"]
+        text = palette["text"]
+        bright = palette["bright"]
+        muted = palette["muted"]
+        secondary = palette["secondary"]
+        blue = palette["blue"]
+        danger = palette["danger"]
+        thinking_body = palette["thinking_body"]
+
         return Style.from_dict(
             {
-                "sidebar": "bg:#111827 #d1d5db",
-                "sidebar.title": "bold #f59e0b",
-                "sidebar.section": "bold #5eead4",
-                "sidebar.item": "#d1d5db",
-                "sidebar.active": "bg:#1f2937 #fbbf24 bold",
-                "sidebar.model": "#93c5fd",
-                "sidebar.model.active": "bg:#1f2937 #5eead4 bold",
-                "sidebar.meta": "#9ca3af",
-                "divider": "#374151",
-                "header": "bg:#0f172a #e5e7eb",
-                "header.title": "bold #fbbf24",
-                "header.meta": "#9ca3af",
-                "header.value": "bold #5eead4",
-                "chat": "bg:#0b1120 #e5e7eb",
-                "message.user": "#f3f4f6",
-                "message.assistant": "#e5e7eb",
-                "message.assistant.dim": "#9ca3af",
-                "message.thinking": "italic #f59e0b",
-                "thinking.border": "#b45309",
-                "thinking.title": "bold #f59e0b",
-                "thinking.body": "italic #fde68a",
-                "thinking.separator": "#92400e",
-                "answer.title": "bold #5eead4",
-                "answer.border": "#0f9474",
-                "answer.separator": "#164e63",
-                "answer.meta": "#9ca3af",
-                "message.selected": "bg:#1f2937 #ffffff bold",
-                "message.meta": "#9ca3af",
-                "message.label.user": "bold #60a5fa",
-                "message.label.assistant": "bold #5eead4",
-                "message.label.edit": "bold #f59e0b",
-                "welcome.logo": "bold #fbbf24",
-                "welcome.title": "bold #5eead4",
-                "welcome.text": "#d1d5db",
-                "welcome.key": "#93c5fd bold",
-                "welcome.command": "#fbbf24 bold",
-                "welcome.rule": "#374151",
-                "markdown.heading": "bold #fbbf24",
-                "markdown.list": "#d1d5db",
-                "markdown.list.marker": "bold #5eead4",
-                "markdown.quote": "italic #9ca3af",
-                "markdown.code": "bg:#111827 #e5e7eb",
-                "markdown.code.border": "bg:#111827 #4b5563",
-                "markdown.code.lang": "bg:#1f2937 #5eead4 bold",
-                "markdown.inline_code": "bg:#111827 #fbbf24",
-                "markdown.bold": "bold #e5e7eb",
-                "markdown.table": "bg:#111827 #e5e7eb",
-                "markdown.table.border": "bg:#111827 #4b5563",
-                "markdown.table.header": "bg:#1f2937 #fbbf24 bold",
-                "toolbar": "bg:#0f172a #d1d5db",
-                "button": "bg:#1f2937 #d1d5db",
-                "button.hot": "bg:#1f2937 #fbbf24 bold",
-                "button.danger": "bg:#1f2937 #fca5a5 bold",
-                "statusbar": "bg:#111827 #d1d5db",
-                "status.mode": "bold #5eead4",
-                "status.text": "#d1d5db",
-                "status.help": "#9ca3af",
-                "input": "bg:#0b1120 #f3f4f6",
-                "input.prompt": "bold #5eead4",
-                "auto-suggestion": "#6b7280",
+                "sidebar": f"bg:{panel} {text}",
+                "sidebar.title": f"bold {accent}",
+                "sidebar.section": f"bold {secondary}",
+                "sidebar.item": text,
+                "sidebar.active": f"bg:{surface} {accent} bold",
+                "sidebar.model": blue,
+                "sidebar.model.active": f"bg:{surface} {secondary} bold",
+                "sidebar.meta": muted,
+                "divider": border,
+                "header": f"bg:{bar} {text}",
+                "header.title": f"bold {accent}",
+                "header.meta": muted,
+                "header.value": f"bold {secondary}",
+                "chat": f"bg:{bg} {text}",
+                "message.user": bright,
+                "message.assistant": text,
+                "message.assistant.dim": muted,
+                "message.thinking": f"italic {accent}",
+                "thinking.border": accent,
+                "thinking.title": f"bold {accent}",
+                "thinking.body": f"italic {thinking_body}",
+                "thinking.separator": border,
+                "answer.title": f"bold {secondary}",
+                "answer.border": secondary,
+                "answer.separator": border,
+                "answer.meta": muted,
+                "message.selected": f"bg:{surface} {bright} bold",
+                "message.meta": muted,
+                "message.label.user": f"bold {blue}",
+                "message.label.assistant": f"bold {secondary}",
+                "message.label.edit": f"bold {accent}",
+                "welcome.logo": f"bold {accent}",
+                "welcome.title": f"bold {secondary}",
+                "welcome.text": text,
+                "welcome.key": f"{blue} bold",
+                "welcome.command": f"{accent} bold",
+                "welcome.rule": border,
+                "markdown.heading": f"bold {accent}",
+                "markdown.list": text,
+                "markdown.list.marker": f"bold {secondary}",
+                "markdown.quote": f"italic {muted}",
+                "markdown.code": f"bg:{panel} {text}",
+                "markdown.code.border": f"bg:{panel} {code_border}",
+                "markdown.code.lang": f"bg:{surface} {secondary} bold",
+                "markdown.inline_code": f"bg:{panel} {accent}",
+                "markdown.bold": f"bold {bright}",
+                "markdown.table": f"bg:{panel} {text}",
+                "markdown.table.border": f"bg:{panel} {code_border}",
+                "markdown.table.header": f"bg:{surface} {accent} bold",
+                "toolbar": f"bg:{bar} {text}",
+                "button": f"bg:{surface} {text}",
+                "button.hot": f"bg:{surface} {accent} bold",
+                "button.danger": f"bg:{surface} {danger} bold",
+                "statusbar": f"bg:{panel} {text}",
+                "status.mode": f"bold {secondary}",
+                "status.text": text,
+                "status.help": muted,
+                "status.tooltip": f"bold {accent}",
+                "input": f"bg:{bg} {bright}",
+                "input.prompt": f"bold {secondary}",
+                "auto-suggestion": muted,
             }
         )
 
@@ -291,6 +405,11 @@ class TuiChatApp:
             ("/project move <nama>", "pindahkan chat aktif ke project"),
             ("/project rename <nama>", "ganti nama project aktif"),
             ("/project delete confirm", "hapus project aktif beserta semua chat"),
+            ("/project system [prompt]", "lihat atau ubah system project"),
+            ("/project system reset", "hapus system khusus project"),
+            ("/project file [path]", "tambahkan file referensi project"),
+            ("/project files", "lihat file referensi project"),
+            ("/project file remove <nomor>", "hapus file referensi project"),
             ("/models [all]", "refresh daftar model"),
             ("/model <nama>", "ganti model"),
             (f"/provider {PROVIDER_HELP_TEXT}", "ganti backend"),
@@ -299,9 +418,11 @@ class TuiChatApp:
             ("/stop", "hentikan jawaban AI yang sedang diproses"),
             ("/regen", "generate ulang jawaban"),
             ("/mouse on|off", "klik tombol / blok teks"),
-            ("/system", "lihat system prompt aktif"),
-            ("/system <teks>", "ubah system prompt aktif"),
-            ("/system reset", "kembali ke prompt default"),
+            (f"/theme {'|'.join(SUPPORTED_THEMES)}", "ganti tema tampilan"),
+            ("/accent <preset|#RRGGBB>", "ganti warna aksen"),
+            ("/system", "lihat system global aktif"),
+            ("/system <teks>", "ubah system global"),
+            ("/system reset", "kembali ke system global default"),
             ("/thinking on|off", "tampil proses berpikir"),
             ("/status", "cek koneksi aktif"),
             ("/save", "simpan konfigurasi"),
@@ -329,7 +450,7 @@ class TuiChatApp:
     def _show_system_prompt_message(self) -> None:
         content = "\n".join(
             [
-                "### System Prompt Aktif",
+                "### System Global Aktif",
                 "",
                 "```text",
                 self.cfg.system_prompt.strip() or "(kosong)",
@@ -340,7 +461,31 @@ class TuiChatApp:
         self.selected_message_index = len(self.session.messages) - 1
         self._request_scroll_to_bottom()
         self._touch_session()
-        self.status = "System prompt aktif ditampilkan di layar chat."
+        self.status = "System global aktif ditampilkan di layar chat."
+
+    def _show_project_system_message(self) -> None:
+        settings = get_project_settings(self.active_project)
+        lines = [
+            f"### System Project: {settings.name}",
+            "",
+            "```text",
+            settings.system_prompt.strip() or "(belum diatur; hanya memakai system global)",
+            "```",
+            "",
+            f"### File Referensi ({len(settings.references)})",
+            "",
+        ]
+        if settings.references:
+            for index, reference in enumerate(settings.references, start=1):
+                suffix = " — dipotong" if reference.truncated else ""
+                lines.append(f"- `{index}. {reference.name}`{suffix}")
+        else:
+            lines.append("- Belum ada file referensi.")
+        self.session.messages.append(ChatMessage("assistant", "\n".join(lines)))
+        self.selected_message_index = len(self.session.messages) - 1
+        self._request_scroll_to_bottom()
+        self._touch_session()
+        self.status = f"System dan referensi Project {settings.name} ditampilkan."
 
     def _key_bindings(self) -> KeyBindings:
         kb = KeyBindings()
@@ -515,9 +660,13 @@ class TuiChatApp:
             self.app.invalidate()
 
     def _api_messages(self) -> list[ChatMessage]:
+        combined_system_prompt = compose_project_system_prompt(
+            self.cfg.system_prompt,
+            self.active_project,
+        )
         system_prompt = with_response_format_prompt(
             with_visible_thinking_prompt(
-                self.cfg.system_prompt,
+                combined_system_prompt,
                 self.cfg.show_thinking,
             )
         )
@@ -576,6 +725,50 @@ class TuiChatApp:
                 self.status = f"Project aktif: {self.active_project} | Tersedia: {projects}"
                 return
             action, _, value = args.partition(" ")
+            if action.lower() == "system":
+                prompt = value.strip()
+                if not prompt or prompt.casefold() in ("show", "lihat", "aktif"):
+                    self._show_project_system_message()
+                    return
+                if prompt.casefold() in ("reset", "default", "hapus"):
+                    set_project_system_prompt(self.active_project, "")
+                    self.status = f"System khusus Project {self.active_project} dihapus."
+                    self._render_cache.clear()
+                    return
+                if prompt.casefold().startswith("set "):
+                    prompt = prompt[4:].strip()
+                set_project_system_prompt(self.active_project, prompt)
+                self.status = f"System Project {self.active_project} diperbarui dan disimpan."
+                self._render_cache.clear()
+                return
+            if action.lower() == "files":
+                self._show_project_system_message()
+                return
+            if action.lower() == "file":
+                try:
+                    file_args = shlex.split(args)
+                except ValueError as exc:
+                    self.status = f"Format /project file tidak valid: {exc}"
+                    return
+                if len(file_args) >= 3 and file_args[1].casefold() == "remove":
+                    selector = " ".join(file_args[2:])
+                    try:
+                        removed = remove_project_reference(self.active_project, selector)
+                    except ValueError as exc:
+                        self.status = str(exc)
+                    else:
+                        self.status = f"Referensi dihapus dari Project: {removed.name}"
+                        self._render_cache.clear()
+                    return
+                if len(file_args) < 2 or file_args[1] in ("--browse", "-b"):
+                    self.file_browser = FileBrowserState()
+                    self.file_browser_mode = "project_reference"
+                    self.file_browser_question_parts = []
+                    self.status = f"Pilih file referensi untuk Project {self.active_project}."
+                    self._request_scroll_to_bottom()
+                    return
+                self._add_project_reference(file_args[1])
+                return
             if action.lower() == "new":
                 if not value.strip():
                     self.status = "Gunakan: /project new <nama>"
@@ -667,6 +860,7 @@ class TuiChatApp:
 
             if len(args) < 2 or args[1] in ("--browse", "-b"):
                 self.file_browser = FileBrowserState()
+                self.file_browser_mode = "chat"
                 self.file_browser_question_parts = args[2:] if len(args) > 1 else []
                 self.status = "File browser aktif. Ketik nomor, .., /filter, atau q."
                 self._request_scroll_to_bottom()
@@ -714,6 +908,36 @@ class TuiChatApp:
                 self._toggle_mouse_mode()
             else:
                 self.status = "Gunakan: /mouse on untuk klik, /mouse off untuk blok teks."
+            return
+        if cmd == "/theme":
+            if len(parts) < 2:
+                self.status = (
+                    f"Tema aktif: {self.cfg.theme}. Tersedia: "
+                    f"{', '.join(SUPPORTED_THEMES)}"
+                )
+                return
+            try:
+                self.cfg.theme = normalize_theme(parts[1])
+            except ValueError as exc:
+                self.status = str(exc)
+                return
+            self._apply_appearance()
+            self.status = f"Tema tampilan: {self.cfg.theme}"
+            return
+        if cmd == "/accent":
+            if len(parts) < 2:
+                self.status = (
+                    f"Aksen aktif: {self.cfg.accent}. Preset: "
+                    f"{', '.join(ACCENT_COLORS)}; atau gunakan #RRGGBB."
+                )
+                return
+            try:
+                self.cfg.accent = normalize_accent(parts[1])
+            except ValueError as exc:
+                self.status = str(exc)
+                return
+            self._apply_appearance()
+            self.status = f"Warna aksen: {self.cfg.accent}"
             return
         if cmd == "/thinking":
             if len(parts) < 2:
@@ -1044,6 +1268,53 @@ class TuiChatApp:
         self.status = "Edit system prompt di input bawah lalu tekan Enter. Gunakan /save jika ingin permanen."
         self.app.invalidate()
 
+    def _edit_project_system_prompt(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum mengubah system project."
+            self.app.invalidate()
+            return
+        settings = get_project_settings(self.active_project)
+        self.editing_message_index = None
+        self.selected_message_index = None
+        prompt_body = settings.system_prompt.rstrip()
+        self.input.text = (
+            f"/project system {prompt_body}" if prompt_body else "/project system "
+        )
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = f"Edit system khusus Project {self.active_project}, lalu tekan Enter."
+        self.app.invalidate()
+
+    def _pick_project_reference(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum menambah referensi project."
+            self.app.invalidate()
+            return
+        self.file_browser = FileBrowserState()
+        self.file_browser_mode = "project_reference"
+        self.file_browser_question_parts = []
+        self.status = f"Pilih file referensi untuk Project {self.active_project}."
+        self._request_scroll_to_bottom()
+        self.app.invalidate()
+
+    def _add_project_reference(self, path_text: str) -> None:
+        try:
+            document = load_document(
+                path_text,
+                max_chars=MAX_PROJECT_REFERENCE_CHARS,
+            )
+            reference = add_project_reference(self.active_project, document)
+        except (DocumentLoadError, ValueError) as exc:
+            self.status = f"Gagal menambah referensi: {exc}"
+        else:
+            suffix = " (dipotong)" if reference.truncated else ""
+            self.status = (
+                f"Referensi Project {self.active_project} ditambahkan: "
+                f"{reference.name}{suffix}"
+            )
+            self._render_cache.clear()
+        self.app.invalidate()
+
     def _rename_session(self) -> None:
         if self.streaming:
             self.status = "Tunggu jawaban selesai sebelum mengganti judul chat."
@@ -1131,6 +1402,34 @@ class TuiChatApp:
             self.status = "Mode blok teks aktif. Drag mouse untuk seleksi teks terminal, F2 untuk kembali."
         self.app.invalidate()
 
+    def _apply_appearance(self) -> None:
+        self.app.style = self._style()
+        save_config(self.cfg)
+        self._render_cache.clear()
+        self.app.invalidate()
+
+    def _theme_prompt(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum mengganti tema."
+            self.app.invalidate()
+            return
+        self.input.text = "/theme "
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = f"Pilih tema: {', '.join(SUPPORTED_THEMES)}"
+        self.app.invalidate()
+
+    def _accent_prompt(self) -> None:
+        if self.streaming:
+            self.status = "Tunggu jawaban selesai sebelum mengganti warna aksen."
+            self.app.invalidate()
+            return
+        self.input.text = "/accent "
+        self.input.buffer.cursor_position = len(self.input.text)
+        self.app.layout.focus(self.input)
+        self.status = "Pilih preset aksen atau masukkan warna HEX seperti #ff8800."
+        self.app.invalidate()
+
     def _toggle_thinking(self, index: int) -> None:
         if index in self.expanded_thinking_indices:
             self.expanded_thinking_indices.remove(index)
@@ -1183,15 +1482,27 @@ class TuiChatApp:
             return max(40, columns - 2)
         return max(40, columns - 34)
 
-    def _click(self, callback):
+    def _set_hover_hint(self, hint: str | None) -> None:
+        if self.hover_hint == hint:
+            return
+        self.hover_hint = hint
+        self.app.invalidate()
+
+    def _click(self, callback, hover_hint: str | None = None):
         def handler(mouse_event: MouseEvent) -> None:
+            if mouse_event.event_type == MouseEventType.MOUSE_MOVE:
+                self._set_hover_hint(hover_hint)
+                return
             if mouse_event.event_type == MouseEventType.SCROLL_UP:
+                self._set_hover_hint(None)
                 self._scroll_chat(-3)
                 return
             if mouse_event.event_type == MouseEventType.SCROLL_DOWN:
+                self._set_hover_hint(None)
                 self._scroll_chat(3)
                 return
             if mouse_event.event_type == MouseEventType.MOUSE_UP:
+                self._set_hover_hint(None)
                 callback()
 
         return handler
@@ -1215,6 +1526,7 @@ class TuiChatApp:
         selected, error = handle_browser_input(self.file_browser, text)
         if error == "cancel":
             self.file_browser = None
+            self.file_browser_mode = "chat"
             self.file_browser_question_parts = []
             self.status = "Pemilihan file dibatalkan."
             self.app.invalidate()
@@ -1229,9 +1541,14 @@ class TuiChatApp:
             self.app.invalidate()
             return
 
+        browser_mode = self.file_browser_mode
         question_parts = self.file_browser_question_parts
         self.file_browser = None
+        self.file_browser_mode = "chat"
         self.file_browser_question_parts = []
+        if browser_mode == "project_reference":
+            self._add_project_reference(str(selected))
+            return
         try:
             if self.cfg.provider in ("gemini", "ollama") and selected.suffix.lower() in IMAGE_EXTENSIONS:
                 message = build_image_message(str(selected), " ".join(question_parts))
@@ -1264,6 +1581,24 @@ class TuiChatApp:
             ("class:header.title", "  DJ Chat Ai "),
             ("class:header.meta", " | "),
             ("class:header.value", state),
+            ("class:header.meta", " | ui: "),
+            (
+                "class:header.value",
+                f"{shorten(self.cfg.theme, width=10, placeholder='...')}/"
+                f"{shorten(self.cfg.accent, width=10, placeholder='...')}",
+            ),
+            ("class:header.meta", " "),
+            (
+                "class:button.hot",
+                " ◐ ",
+                self._click(self._theme_prompt, "Ganti tema tampilan"),
+            ),
+            ("class:header.meta", " "),
+            (
+                "class:button.hot",
+                " ◆ ",
+                self._click(self._accent_prompt, "Ganti warna aksen"),
+            ),
             ("class:header.meta", " | chat: "),
             ("class:header.value", title),
             ("class:header.meta", " | project: "),
@@ -1300,16 +1635,25 @@ class TuiChatApp:
             f"CPU {stats.cpu_percent:.1f}% | RAM {stats.memory_mb:.0f} MB "
             f"({stats.memory_percent:.1f}%) | {token_text} | Ctrl-Q keluar"
         )
-        return [
+        status_fragments: list[tuple] = [
             ("class:status.mode", f" {mode} "),
             ("class:status.help", f" {help_text}"),
-            ("class:status.text", f" | {self.status}"),
         ]
+        if self.hover_hint:
+            status_fragments.extend(
+                [
+                    ("class:status.text", " | "),
+                    ("class:status.tooltip", f"ⓘ {self.hover_hint}"),
+                ]
+            )
+        else:
+            status_fragments.append(("class:status.text", f" | {self.status}"))
+        return status_fragments
 
     def _render_sidebar(self) -> AnyFormattedText:
         fragments = [("class:sidebar.title", "  DJ Chat Ai\n")]
         fragments.append(("class:sidebar.meta", "  Terminal AI assistant\n\n"))
-        fragments.append(("class:sidebar.section", "  System prompt\n"))
+        fragments.append(("class:sidebar.section", "  System global\n"))
         system_prompt_preview = " ".join(self.cfg.system_prompt.strip().split()) or "(kosong)"
         for line in wrap(system_prompt_preview, width=22)[:3]:
             fragments.append(("class:sidebar.meta", f"  {line}\n"))
@@ -1317,9 +1661,13 @@ class TuiChatApp:
             fragments.append(("class:sidebar.meta", "  ...\n"))
         fragments.append(("class:sidebar.meta", "  ──────────────────────\n  "))
         fragments.append(
-            ("class:button.hot", " [⚙] ", self._click(self._edit_system_prompt))
+            (
+                "class:button.hot",
+                " [⚙] ",
+                self._click(self._edit_system_prompt, "Edit system global"),
+            )
         )
-        fragments.append(("class:sidebar.meta", "  /system\n\n"))
+        fragments.append(("class:sidebar.meta", "\n\n"))
         fragments.append(("class:sidebar.section", "  Projects & chats\n"))
         for project in self.projects:
             project_sessions = [
@@ -1360,23 +1708,95 @@ class TuiChatApp:
                     ("class:sidebar.meta", f"     +{len(project_sessions) - 8} chat lain\n")
                 )
 
+        project_settings = get_project_settings(self.active_project)
+        project_prompt_preview = (
+            " ".join(project_settings.system_prompt.strip().split())
+            or "(mengikuti system global)"
+        )
+        fragments.append(("class:sidebar.section", "\n  System project\n"))
+        fragments.append(
+            (
+                "class:sidebar.active",
+                f"  {shorten(self.active_project, width=20, placeholder='...')}\n",
+            )
+        )
+        for line in wrap(project_prompt_preview, width=22)[:2]:
+            fragments.append(("class:sidebar.meta", f"  {line}\n"))
+        reference_count = len(project_settings.references)
+        fragments.append(
+            (
+                "class:sidebar.meta",
+                f"  Referensi: {reference_count}/{MAX_PROJECT_REFERENCES}\n",
+            )
+        )
+        for reference in project_settings.references[:2]:
+            fragments.append(
+                (
+                    "class:sidebar.meta",
+                    f"  • {shorten(reference.name, width=19, placeholder='...')}\n",
+                )
+            )
+        if reference_count > 2:
+            fragments.append(
+                ("class:sidebar.meta", f"  +{reference_count - 2} file lain\n")
+            )
         fragments.append(("class:sidebar.meta", "  ──────────────────────\n  "))
         fragments.append(
-            ("class:button.hot", " ＋ ", self._click(self._new_project_prompt))
+            (
+                "class:button.hot",
+                " ⚙ ",
+                self._click(
+                    self._edit_project_system_prompt,
+                    "Edit system project",
+                ),
+            )
         )
         fragments.append(("class:sidebar.meta", " "))
         fragments.append(
-            ("class:button", " ✎ ", self._click(self._rename_project_prompt))
+            (
+                "class:button.hot",
+                " ⌑ ",
+                self._click(
+                    self._pick_project_reference,
+                    "Tambah file referensi project",
+                ),
+            )
+        )
+        fragments.append(("class:sidebar.meta", "\n"))
+
+        fragments.append(("class:sidebar.meta", "  ──────────────────────\n  "))
+        fragments.append(
+            (
+                "class:button.hot",
+                " ＋ ",
+                self._click(self._new_project_prompt, "Buat project baru"),
+            )
         )
         fragments.append(("class:sidebar.meta", " "))
         fragments.append(
-            ("class:button.danger", " × ", self._click(self._delete_project_prompt))
+            (
+                "class:button",
+                " ✎ ",
+                self._click(self._rename_project_prompt, "Ganti nama project"),
+            )
         )
         fragments.append(("class:sidebar.meta", " "))
         fragments.append(
-            ("class:button.hot", " ✐ ", self._click(self._rename_session))
+            (
+                "class:button.danger",
+                " × ",
+                self._click(self._delete_project_prompt, "Hapus project"),
+            )
         )
-        fragments.append(("class:sidebar.meta", "\n  ＋ baru   ✎ project\n  × hapus  ✐ chat\n"))
+        fragments.append(("class:sidebar.meta", " "))
+        fragments.append(
+            (
+                "class:button.hot",
+                " ✐ ",
+                self._click(self._rename_session, "Ganti nama chat"),
+            )
+        )
+        fragments.append(("class:sidebar.meta", "\n"))
 
         fragments.append(("class:sidebar.section", "\n  Models\n"))
         provider = shorten(self.cfg.provider, width=8, placeholder="...")
@@ -1418,10 +1838,15 @@ class TuiChatApp:
             return fragments
 
         if self.file_browser is not None:
+            browser_title = (
+                f"File referensi Project: {self.active_project}"
+                if self.file_browser_mode == "project_reference"
+                else "File browser"
+            )
             fragments = [("", "\n")]
             fragments.extend(
                 [
-                    ("class:message.label.assistant", "    File browser\n"),
+                    ("class:message.label.assistant", f"    {browser_title}\n"),
                     ("class:message.assistant", f"    Folder: {self.file_browser.cwd}\n"),
                     (
                         "class:message.assistant",
@@ -1649,14 +2074,25 @@ class TuiChatApp:
         meta = " aktif" if selected else ""
         return [
             ("", "    "),
-            (action_style, " [⧉] ", self._click(lambda i=index: self._copy_message(i))),
+            (
+                action_style,
+                " [⧉] ",
+                self._click(lambda i=index: self._copy_message(i), "Salin jawaban"),
+            ),
             ("", " "),
-            (action_style, " [✎] ", self._click(lambda i=index: self._edit_message(i))),
+            (
+                action_style,
+                " [✎] ",
+                self._click(lambda i=index: self._edit_message(i), "Edit jawaban"),
+            ),
             ("", " "),
             (
                 action_style,
                 " [↻] ",
-                self._click(lambda i=index: self._regenerate_message(i)),
+                self._click(
+                    lambda i=index: self._regenerate_message(i),
+                    "Generate ulang jawaban",
+                ),
             ),
             ("class:message.meta", f" jawaban{meta}\n"),
         ]
@@ -1729,31 +2165,75 @@ class TuiChatApp:
 
         if self.streaming:
             return [
-                ("class:button.danger", " [■] ", self._click(self._cancel_stream)),
+                (
+                    "class:button.danger",
+                    " [■] ",
+                    self._click(self._cancel_stream, "Hentikan jawaban AI"),
+                ),
                 ("", "   "),
                 ("class:message.meta", "AI sedang menjawab | Esc untuk hentikan"),
             ]
 
         return [
-            ("class:button.hot", " [⧉] ", self._click(self._copy_selected)),
+            (
+                "class:button.hot",
+                " [⧉] ",
+                self._click(self._copy_selected, "Salin pesan terpilih"),
+            ),
             ("", " "),
-            ("class:button.hot", " [✎] ", self._click(self._edit_selected)),
+            (
+                "class:button.hot",
+                " [✎] ",
+                self._click(self._edit_selected, "Edit pesan terpilih"),
+            ),
             ("", " "),
-            ("class:button.hot", " [⚙] ", self._click(self._edit_system_prompt)),
+            (
+                "class:button.hot",
+                " [⚙] ",
+                self._click(self._edit_system_prompt, "Edit system global"),
+            ),
             ("", " "),
-            ("class:button.hot", " [✐] ", self._click(self._rename_session)),
+            (
+                "class:button.hot",
+                " [✐] ",
+                self._click(self._rename_session, "Ganti nama chat"),
+            ),
             ("", " "),
-            ("class:button.hot", " [▣] ", self._click(self._new_project_prompt)),
+            (
+                "class:button.hot",
+                " [▣] ",
+                self._click(self._new_project_prompt, "Buat project baru"),
+            ),
             ("", " "),
-            ("class:button.hot", " [↻] ", self._click(self._regenerate_selected)),
+            (
+                "class:button.hot",
+                " [↻] ",
+                self._click(self._regenerate_selected, "Generate ulang jawaban"),
+            ),
             ("", " "),
-            ("class:button.hot", " [⌑] ", self._click(self._pick_file_from_toolbar)),
+            (
+                "class:button.hot",
+                " [⌑] ",
+                self._click(self._pick_file_from_toolbar, "Buka file"),
+            ),
             ("", " "),
-            ("class:button", " [▤] ", self._click(lambda: self._set_mouse_mode(False))),
+            (
+                "class:button",
+                " [▤] ",
+                self._click(lambda: self._set_mouse_mode(False), "Mode blok teks"),
+            ),
             ("", " "),
-            ("class:button", " [＋] ", self._click(self._new_session)),
+            (
+                "class:button",
+                " [＋] ",
+                self._click(self._new_session, "Buat chat baru"),
+            ),
             ("", " "),
-            ("class:button.danger", " [×] ", self._click(self._delete_current_session)),
+            (
+                "class:button.danger",
+                " [×] ",
+                self._click(self._delete_current_session, "Hapus chat aktif"),
+            ),
             ("", "   "),
             (
                 "class:message.meta",

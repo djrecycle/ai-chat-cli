@@ -61,7 +61,7 @@ Cara paling mudah untuk menginstall di sistem Debian/Ubuntu — tidak perlu setu
 Download file `.deb` dari halaman [Releases](https://github.com/djrecycle/ai-chat-cli/releases), lalu install:
 
 ```bash
-sudo dpkg -i aichat_1.3.0_all.deb
+sudo dpkg -i aichat_1.3.5b0_all.deb
 ```
 
 Repo ini sekarang juga punya workflow GitHub Actions yang akan build dan
@@ -96,7 +96,7 @@ chmod +x build-deb.sh
 ./build-deb.sh
 
 # Install hasil build
-sudo dpkg -i dist/aichat_1.3.0_all.deb
+sudo dpkg -i dist/aichat_1.3.5b0_all.deb
 ```
 
 Untuk menyertakan fitur dokumen (Pillow, pypdf, pytesseract, python-docx):
@@ -275,6 +275,11 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/project move <nama>` | Pindahkan chat aktif ke project tertentu |
 | `/project rename <nama>` | Ganti nama project aktif beserta seluruh chat di dalamnya |
 | `/project delete confirm` | Hapus project aktif beserta seluruh chat di dalamnya |
+| `/project system [prompt]` | Lihat atau atur system prompt khusus project aktif |
+| `/project system reset` | Hapus system prompt khusus project dan kembali memakai system global |
+| `/project file [path]` | Tambahkan file sebagai referensi permanen project; tanpa path akan membuka browser file |
+| `/project files` | Tampilkan system dan daftar file referensi project |
+| `/project file remove <nomor>` | Hapus file referensi berdasarkan nomor dari `/project files` |
 | `/models` | Daftar model |
 | `/models all` | Tampilkan semua model ke layar chat |
 | `/model <nama>` | Ganti model |
@@ -284,6 +289,8 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/regen` | Generate ulang jawaban terakhir/terpilih |
 | `/stop` | Hentikan jawaban AI yang sedang diproses (TUI: tombol **[■]** atau `Esc`) |
 | `/mouse on\|off` | Ganti mode klik atau blok teks di TUI |
+| `/theme [dark\|midnight\|forest\|light]` | Lihat atau ganti tema TUI |
+| `/accent <preset\|#RRGGBB>` | Lihat atau ganti warna aksen TUI |
 | `/system` | Lihat system prompt aktif |
 | `/system <teks>` | Ubah system prompt aktif |
 | `/system reset` | Kembalikan system prompt ke default |
@@ -301,6 +308,28 @@ perubahan itu tersimpan untuk sesi berikutnya.
 
 `/new`, `/delete`, `/rename`, `/project`, `/regen`, dan `/mouse` tersedia di TUI full-screen yang
 menjadi mode default saat menjalankan `aichat`.
+
+Arahkan pointer mouse ke ikon pada toolbar, sidebar, atau aksi jawaban untuk
+menampilkan keterangan fungsi ikon di status bar tanpa perlu mengkliknya.
+
+### Tema dan warna aksen
+
+Tema dan aksen dapat diganti langsung tanpa restart. Kontrolnya berada di header: klik ikon **◐**
+untuk tema atau **◆** untuk aksen. Tema dan aksen aktif ditampilkan di samping kedua ikon. Command
+berikut juga dapat digunakan:
+
+```text
+/theme
+/theme midnight
+/theme forest
+/theme light
+/accent purple
+/accent #ff8800
+```
+
+Tema tersedia: `dark`, `midnight`, `forest`, dan `light`. Preset aksen tersedia: `amber`, `cyan`,
+`green`, `blue`, `purple`, `pink`, dan `red`. Warna kustom harus menggunakan HEX enam digit.
+Pilihan tampilan disimpan otomatis ke `~/.config/ai-chat-cli/config.json`.
 
 ### Mengelompokkan chat dengan Project
 
@@ -324,6 +353,37 @@ disimpan di `~/.config/ai-chat-cli/projects.json`, sedangkan isi chat tetap bera
 ikon **✎** dan **×** di bawah daftar project pada sidebar. Penghapusan baru dijalankan setelah
 mengetik `confirm`, dan akan menghapus seluruh chat di dalam Project tersebut. Folder **Umum**
 dilindungi sehingga tidak dapat diganti namanya atau dihapus.
+
+### System global dan system project
+
+System global berlaku untuk semua chat dan tetap dikelola dengan `/system`. Setiap project dapat
+memiliki instruksi tambahan sendiri. System project otomatis digabung dengan system global ketika
+AI menjawab chat di project tersebut.
+
+```text
+/project system Kamu adalah asisten dokumentasi untuk project ini.
+/project system
+/project system reset
+```
+
+Ikon **⚙** pada bagian **System project** di sidebar digunakan untuk mengedit instruksi project.
+System project tersimpan otomatis; tidak perlu menjalankan `/save`.
+
+### File referensi project
+
+Klik ikon **⌑** di bawah isi System project untuk memilih file melalui browser terminal, atau gunakan:
+
+```text
+/project file ./README.md
+/project file ./dokumen/arsitektur.pdf
+/project files
+/project file remove 1
+```
+
+Isi file diekstrak dan disimpan di `~/.config/ai-chat-cli/projects.json`, sehingga tetap menjadi
+bahan referensi seluruh chat dalam project walaupun file aslinya dipindahkan. Format yang didukung
+sama dengan `/file`: teks, PDF, DOCX, dan gambar melalui OCR. Setiap project dapat menyimpan hingga
+8 file; isi setiap file dan total konteks dibatasi agar prompt tidak membesar tanpa kendali.
 
 Contoh membaca file di mode chat:
 
