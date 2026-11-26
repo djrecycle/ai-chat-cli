@@ -5,6 +5,7 @@ from .base import (
     TokenUsage,
     estimate_token_usage,
 )
+from .claude import ClaudeProvider
 from .deepseek import DeepSeekProvider
 from .gemini import GeminiProvider
 from .localai import LocalAIProvider
@@ -17,6 +18,7 @@ __all__ = [
     "ImageAttachment",
     "TokenUsage",
     "estimate_token_usage",
+    "ClaudeProvider",
     "DeepSeekProvider",
     "GeminiProvider",
     "LocalAIProvider",

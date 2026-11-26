@@ -64,7 +64,7 @@ from ..history_store import (
     title_from_message,
 )
 from ..image_preview import extract_generated_image_paths, open_image
-from ..providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, estimate_token_usage
+from ..providers import ChatMessage, ClaudeProvider, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, estimate_token_usage
 from ..providers.base import ChatProvider
 from ..suggestions import ChatAutoSuggest
 from ..system_monitor import ProcessResourceMonitor, ResourceStats
@@ -287,6 +287,8 @@ class TuiChatApp:
         )
 
     def _make_provider(self) -> ChatProvider:
+        if self.cfg.provider == "claude":
+            return ClaudeProvider(self.cfg.claude_base_url, self.cfg.claude_api_key)
         if self.cfg.provider == "deepseek":
             return DeepSeekProvider(self.cfg.deepseek_base_url, self.cfg.deepseek_api_key)
         if self.cfg.provider == "gemini":
@@ -1014,7 +1016,9 @@ class TuiChatApp:
             return
         if cmd == "/apikey" and len(parts) >= 2:
             key = " ".join(parts[1:])
-            if self.cfg.provider == "deepseek":
+            if self.cfg.provider == "claude":
+                self.cfg.claude_api_key = key
+            elif self.cfg.provider == "deepseek":
                 self.cfg.deepseek_api_key = key
             elif self.cfg.provider == "gemini":
                 self.cfg.gemini_api_key = key
@@ -2190,7 +2194,7 @@ class TuiChatApp:
         width = self._chat_width()
         logo = TUI_LOGO if width >= max(len(line) for line in TUI_LOGO) else ["DJ CHAT AI"]
         intro = [
-            "Chat terminal untuk Ollama, LocalAI, OpenAI, Gemini, dan DeepSeek",
+            "Chat terminal untuk Ollama, LocalAI, OpenAI, Gemini, DeepSeek, dan Claude API",
             "",
             "Mulai dengan mengetik pesan di bawah, atau gunakan /file untuk membaca dokumen.",
             "",

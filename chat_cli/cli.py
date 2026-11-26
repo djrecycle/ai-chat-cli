@@ -136,7 +136,7 @@ async def _ask_once(cfg: AppConfig, prompt: str, file_path: str | None = None) -
     "-p",
     "--provider",
     type=click.Choice(SUPPORTED_PROVIDERS, case_sensitive=False),
-    help="Backend AI (ollama, localai, openai, gemini, atau deepseek).",
+    help="Backend AI (ollama, localai, openai, gemini, deepseek, atau claude).",
 )
 @click.option("-t", "--temperature", type=float, help="Suhu sampling (0.0–2.0).")
 @click.option("--system-prompt", help="System prompt untuk sesi ini.")

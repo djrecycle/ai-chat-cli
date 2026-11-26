@@ -3,7 +3,7 @@
 ![Tampilan DJ Chat Ai](./Screenshot_2.png)
 ![Tampilan DJ Chat Ai 2](./Screenshot_1.png)
 
-DJ Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **DeepSeek**, **Ollama**, dan **LocalAI**.
+DJ Chat AI di terminal dengan tampilan antarmuka interaktif (Rich & Prompt-Toolkit), mendukung **Gemini**, **OpenAI**, **DeepSeek**, **Ollama**, **LocalAI**, dan **Claude API** (token dari panel Token API sendiri).
 
 ## Fitur Utama
 
@@ -283,7 +283,7 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/models` | Daftar model |
 | `/models all` | Tampilkan semua model ke layar chat |
 | `/model <nama>` | Ganti model |
-| `/provider ollama\|localai\|openai\|gemini\|deepseek` | Ganti backend |
+| `/provider ollama\|localai\|openai\|gemini\|deepseek\|claude` | Ganti backend |
 | `/apikey <key>` | Simpan API key untuk provider aktif |
 | `/clear` | Hapus riwayat |
 | `/regen` | Generate ulang jawaban terakhir/terpilih |
@@ -420,7 +420,7 @@ sudo apt install tesseract-ocr tesseract-ocr-ind
 
 > [!IMPORTANT]
 > Dukungan gambar asli saat ini hanya tersedia pada provider **Gemini** dan **Ollama**.
-> Provider OpenAI, DeepSeek, dan LocalAI pada aplikasi ini belum menerima gambar asli; gambar
+> Provider OpenAI, DeepSeek, Claude API, dan LocalAI pada aplikasi ini belum menerima gambar asli; gambar
 > diproses melalui Tesseract OCR dan hanya teks hasil ekstraksinya yang dikirim ke model.
 
 Gemini dan Ollama mengirim gambar langsung sebagai input multimodal sehingga model vision dapat
@@ -472,6 +472,22 @@ instruksi perubahan, misalnya "ubah latar menjadi matahari terbenam".
 Catatan: PDF hasil scan biasanya tidak punya teks tertanam. Ubah halaman PDF scan menjadi gambar,
 lalu baca dengan `/file gambar.png ...`, atau jalankan OCR PDF di luar aplikasi terlebih dahulu.
 
+## Claude API (token dari panel Token API)
+
+Provider `claude` memakai server Claude API di VPS (`https://api.musicclass.tech`), dengan token
+yang dibuat di menu **🔑 Token API** Ruang Kerja (atau `claude-token-panel`). Servernya kompatibel
+OpenAI (`/v1/models`, `/v1/chat/completions`, header `Authorization: Bearer`).
+
+```text
+/provider claude
+/apikey <token-dari-panel>
+/models
+/model <nama-model-dari-daftar>
+```
+
+Token disimpan di `~/.config/ai-chat-cli/config.json` bagian `"claude"`. Pemakaian token ini
+terhitung di kuota token tersebut dan tampil di panel Token API.
+
 ## Konfigurasi
 
 Edit `~/.config/ai-chat-cli/config.json`:
@@ -491,6 +507,11 @@ Edit `~/.config/ai-chat-cli/config.json`:
   "localai": {
     "base_url": "http://127.0.0.1:8080",
     "model": "gpt-3.5-turbo",
+    "api_key": ""
+  },
+  "claude": {
+    "base_url": "https://api.musicclass.tech",
+    "model": "claude-sonnet-5-5",
     "api_key": ""
   },
   "system_prompt": "Kamu adalah asisten AI yang ramah...",

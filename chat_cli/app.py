@@ -28,7 +28,7 @@ from .document_loader import (
     load_document,
 )
 from .image_preview import extract_generated_image_paths, open_image
-from .providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, TokenUsage, estimate_token_usage
+from .providers import ChatMessage, ClaudeProvider, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, TokenUsage, estimate_token_usage
 from .providers.base import ChatProvider
 from .suggestions import ChatAutoSuggest
 from .terminal_file_browser import FileBrowserState, handle_browser_input, render_browser_lines
@@ -49,6 +49,8 @@ class ChatApp:
         )
 
     def _make_provider(self) -> ChatProvider:
+        if self.cfg.provider == "claude":
+            return ClaudeProvider(self.cfg.claude_base_url, self.cfg.claude_api_key)
         if self.cfg.provider == "deepseek":
             return DeepSeekProvider(self.cfg.deepseek_base_url, self.cfg.deepseek_api_key)
         if self.cfg.provider == "gemini":
@@ -282,7 +284,9 @@ class ChatApp:
                 ui.show_error("Gunakan: /apikey <key>")
                 return True
             key = " ".join(parts[1:])
-            if self.cfg.provider == "deepseek":
+            if self.cfg.provider == "claude":
+                self.cfg.claude_api_key = key
+            elif self.cfg.provider == "deepseek":
                 self.cfg.deepseek_api_key = key
             elif self.cfg.provider == "gemini":
                 self.cfg.gemini_api_key = key

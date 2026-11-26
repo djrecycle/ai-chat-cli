@@ -38,6 +38,7 @@ COMMAND_SUGGESTIONS = [
     "/provider openai",
     "/provider gemini",
     "/provider deepseek",
+    "/provider claude",
     "/apikey ",
     "/clear",
     "/regen",

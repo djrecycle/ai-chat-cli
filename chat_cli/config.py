@@ -10,7 +10,7 @@ from typing import Any
 
 CONFIG_DIR = Path.home() / ".config" / "ai-chat-cli"
 CONFIG_FILE = CONFIG_DIR / "config.json"
-SUPPORTED_PROVIDERS = ("ollama", "localai", "openai", "gemini", "deepseek")
+SUPPORTED_PROVIDERS = ("ollama", "localai", "openai", "gemini", "deepseek", "claude")
 PROVIDER_HELP_TEXT = "|".join(SUPPORTED_PROVIDERS)
 SUPPORTED_THEMES = ("dark", "midnight", "forest", "light")
 ACCENT_COLORS = {
@@ -49,6 +49,11 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "model": "deepseek-chat",
         "api_key": "",
     },
+    "claude": {
+        "base_url": "https://api.musicclass.tech",
+        "model": "claude-sonnet-5-5",
+        "api_key": "",
+    },
     "system_prompt": "Kamu adalah asisten AI yang ramah dan membantu. Jawab dengan jelas dalam bahasa yang dipakai pengguna.",
     "temperature": 0.7,
     "show_thinking": True,
@@ -76,6 +81,9 @@ class AppConfig:
     deepseek_base_url: str = "https://api.deepseek.com"
     deepseek_model: str = "deepseek-chat"
     deepseek_api_key: str = ""
+    claude_base_url: str = "https://api.musicclass.tech"
+    claude_model: str = "claude-sonnet-5-5"
+    claude_api_key: str = ""
     system_prompt: str = DEFAULT_SYSTEM_PROMPT
     temperature: float = 0.7
     show_thinking: bool = True
@@ -85,6 +93,8 @@ class AppConfig:
 
     @property
     def active_base_url(self) -> str:
+        if self.provider == "claude":
+            return self.claude_base_url.rstrip("/")
         if self.provider == "deepseek":
             return self.deepseek_base_url.rstrip("/")
         if self.provider == "gemini":
@@ -97,6 +107,8 @@ class AppConfig:
 
     @property
     def active_model(self) -> str:
+        if self.provider == "claude":
+            return self.claude_model
         if self.provider == "deepseek":
             return self.deepseek_model
         if self.provider == "gemini":
@@ -108,7 +120,9 @@ class AppConfig:
         return self.ollama_model
 
     def set_model(self, model: str) -> None:
-        if self.provider == "deepseek":
+        if self.provider == "claude":
+            self.claude_model = model
+        elif self.provider == "deepseek":
             self.deepseek_model = model
         elif self.provider == "gemini":
             self.gemini_model = model
@@ -142,6 +156,7 @@ def load_config() -> AppConfig:
     openai = data.get("openai") or {}
     gemini = data.get("gemini") or {}
     deepseek = data.get("deepseek") or {}
+    claude = data.get("claude") or {}
     try:
         theme = normalize_theme(str(data.get("theme", DEFAULT_CONFIG["theme"])))
     except ValueError:
@@ -167,6 +182,9 @@ def load_config() -> AppConfig:
         deepseek_base_url=str(deepseek.get("base_url", DEFAULT_CONFIG["deepseek"]["base_url"])),
         deepseek_model=str(deepseek.get("model", DEFAULT_CONFIG["deepseek"]["model"])),
         deepseek_api_key=str(deepseek.get("api_key", "")),
+        claude_base_url=str(claude.get("base_url", DEFAULT_CONFIG["claude"]["base_url"])),
+        claude_model=str(claude.get("model", DEFAULT_CONFIG["claude"]["model"])),
+        claude_api_key=str(claude.get("api_key", "")),
         system_prompt=str(data.get("system_prompt", DEFAULT_SYSTEM_PROMPT)),
         temperature=float(data.get("temperature", 0.7)),
         show_thinking=bool(data.get("show_thinking", DEFAULT_CONFIG["show_thinking"])),
@@ -205,6 +223,11 @@ def save_config(cfg: AppConfig) -> None:
             "base_url": cfg.deepseek_base_url,
             "model": cfg.deepseek_model,
             "api_key": cfg.deepseek_api_key,
+        },
+        "claude": {
+            "base_url": cfg.claude_base_url,
+            "model": cfg.claude_model,
+            "api_key": cfg.claude_api_key,
         },
         "system_prompt": cfg.system_prompt,
         "temperature": cfg.temperature,
