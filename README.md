@@ -219,7 +219,7 @@ Saat menggunakan model yang mendukung proses berpikir (seperti `gemini-2.5-flash
 ### 2. Berinteraksi dengan Mouse
 Aplikasi ini sudah sepenuhnya mendukung kontrol *Mouse* di terminal!
 - **Klik Kiri** pada daftar obrolan di sisi kiri (Sidebar) untuk berpindah riwayat obrolan secara instan.
-- **Klik Kiri** pada model di sisi kiri untuk mengganti model yang sedang aktif secara instan.
+- Sidebar menampilkan maksimal 5 model agar tetap ringkas. Klik model di sisi kiri untuk mengganti model aktif, atau klik baris `+... model lain` / gunakan `/models all` untuk melihat semua model.
 - **F2**: Menyalakan mode "Blok teks" jika Anda ingin menyeleksi (mem-blok) teks dengan mouse untuk di-copy ke luar terminal.
 
 ### 3. Smart Code Block & LaTeX
@@ -289,6 +289,7 @@ Tekan tombol panah kanan atau `Ctrl-F` untuk menerima suggestion.
 | `/regen` | Generate ulang jawaban terakhir/terpilih |
 | `/stop` | Hentikan jawaban AI yang sedang diproses (TUI: tombol **[■]** atau `Esc`) |
 | `/mouse on\|off` | Ganti mode klik atau blok teks di TUI |
+| `/image-popup on\|off` | Nyalakan atau matikan popup otomatis gambar hasil generate |
 | `/theme [dark\|midnight\|forest\|light]` | Lihat atau ganti tema TUI |
 | `/accent <preset\|#RRGGBB>` | Lihat atau ganti warna aksen TUI |
 | `/system` | Lihat system prompt aktif |
@@ -460,8 +461,13 @@ Buat ilustrasi studio musik futuristik dengan pencahayaan neon, rasio 16:9
 ```
 
 Gambar yang dihasilkan disimpan otomatis ke `~/Pictures/DJ-Chat-AI/`, kemudian lokasi file
-ditampilkan pada jawaban chat. Untuk mengedit gambar, pilih gambar melalui tombol **[File]** saat
-model image aktif, lalu sertakan instruksi perubahan, misalnya "ubah latar menjadi matahari terbenam".
+ditampilkan pada jawaban chat. Secara default aplikasi akan membuka gambar tersebut sebagai popup
+di image viewer sistem. Di TUI, jawaban yang berisi gambar juga memiliki tombol **[▣]** untuk
+membuka ulang gambar terakhir pada jawaban itu. Gunakan `/image-popup off` jika ingin mematikan
+popup otomatis, atau `/image-popup on` untuk menyalakannya kembali.
+
+Untuk mengedit gambar, pilih gambar melalui tombol **[File]** saat model image aktif, lalu sertakan
+instruksi perubahan, misalnya "ubah latar menjadi matahari terbenam".
 
 Catatan: PDF hasil scan biasanya tidak punya teks tertanam. Ubah halaman PDF scan menjadi gambar,
 lalu baca dengan `/file gambar.png ...`, atau jalankan OCR PDF di luar aplikasi terlebih dahulu.

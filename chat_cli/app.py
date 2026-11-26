@@ -27,6 +27,7 @@ from .document_loader import (
     build_image_message,
     load_document,
 )
+from .image_preview import extract_generated_image_paths, open_image
 from .providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, TokenUsage, estimate_token_usage
 from .providers.base import ChatProvider
 from .suggestions import ChatAutoSuggest
@@ -113,6 +114,16 @@ class ChatApp:
 
         return full
 
+    def _open_generated_images(self, reply: str) -> None:
+        if not self.cfg.auto_open_images:
+            return
+        for path in extract_generated_image_paths(reply):
+            success, message = open_image(path)
+            if success:
+                ui.show_success(message)
+            else:
+                ui.show_error(message)
+
     def _reply_usage(self, reply: str) -> TokenUsage:
         return self.provider.last_usage or estimate_token_usage(
             self._api_messages(), reply
@@ -142,6 +153,7 @@ class ChatApp:
         try:
             ui.show_assistant_stream_start()
             reply = await self._stream_reply()
+            self._open_generated_images(reply)
             usage = self._reply_usage(reply)
             self.history.append(ChatMessage("assistant", reply, token_usage=usage))
             self._show_token_usage(usage)
@@ -206,6 +218,7 @@ class ChatApp:
             try:
                 ui.show_assistant_stream_start()
                 reply = await self._stream_reply()
+                self._open_generated_images(reply)
                 usage = self._reply_usage(reply)
                 self.history.append(ChatMessage("assistant", reply, token_usage=usage))
                 self._show_token_usage(usage)
@@ -222,6 +235,26 @@ class ChatApp:
                 ui.show_models(models, self.cfg.active_model)
             except Exception as exc:
                 ui.show_error(f"Gagal mengambil model: {exc}")
+            return True
+
+        if cmd == "/image-popup":
+            if len(parts) < 2:
+                state = "aktif" if self.cfg.auto_open_images else "mati"
+                ui.show_info(
+                    f"Popup gambar otomatis {state}. Gunakan /image-popup on atau off."
+                )
+                return True
+            value = parts[1].lower()
+            if value in ("on", "true", "1", "yes", "ya"):
+                self.cfg.auto_open_images = True
+            elif value in ("off", "false", "0", "no", "tidak"):
+                self.cfg.auto_open_images = False
+            else:
+                ui.show_error("Gunakan: /image-popup on atau /image-popup off")
+                return True
+            save_config(self.cfg)
+            state = "aktif" if self.cfg.auto_open_images else "mati"
+            ui.show_success(f"Popup gambar otomatis {state}.")
             return True
 
         if cmd == "/model":

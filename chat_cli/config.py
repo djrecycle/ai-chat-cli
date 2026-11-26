@@ -54,6 +54,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "show_thinking": True,
     "theme": "dark",
     "accent": "amber",
+    "auto_open_images": True,
 }
 DEFAULT_SYSTEM_PROMPT = str(DEFAULT_CONFIG["system_prompt"])
 
@@ -80,6 +81,7 @@ class AppConfig:
     show_thinking: bool = True
     theme: str = "dark"
     accent: str = "amber"
+    auto_open_images: bool = True
 
     @property
     def active_base_url(self) -> str:
@@ -170,6 +172,9 @@ def load_config() -> AppConfig:
         show_thinking=bool(data.get("show_thinking", DEFAULT_CONFIG["show_thinking"])),
         theme=theme,
         accent=accent,
+        auto_open_images=bool(
+            data.get("auto_open_images", DEFAULT_CONFIG["auto_open_images"])
+        ),
     )
 
 
@@ -206,6 +211,7 @@ def save_config(cfg: AppConfig) -> None:
         "show_thinking": cfg.show_thinking,
         "theme": normalize_theme(cfg.theme),
         "accent": normalize_accent(cfg.accent),
+        "auto_open_images": cfg.auto_open_images,
     }
     with CONFIG_FILE.open("w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)

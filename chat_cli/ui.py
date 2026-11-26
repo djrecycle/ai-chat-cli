@@ -54,6 +54,7 @@ HELP_ROWS = [
     ("/system <teks>", "Ubah system prompt aktif"),
     ("/system reset", "Kembalikan system prompt default"),
     ("/thinking on|off", "Tampilkan/sembunyikan proses berpikir"),
+    ("/image-popup on|off", "Popup otomatis gambar hasil generate"),
     ("/save", "Simpan konfigurasi"),
     ("/status", "Info koneksi & pengaturan"),
 ]

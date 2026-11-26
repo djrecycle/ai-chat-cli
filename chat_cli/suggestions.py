@@ -44,6 +44,8 @@ COMMAND_SUGGESTIONS = [
     "/stop",
     "/mouse on",
     "/mouse off",
+    "/image-popup on",
+    "/image-popup off",
     "/theme",
     "/theme dark",
     "/theme midnight",

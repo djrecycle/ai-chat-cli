@@ -63,6 +63,7 @@ from ..history_store import (
     set_project_system_prompt,
     title_from_message,
 )
+from ..image_preview import extract_generated_image_paths, open_image
 from ..providers import ChatMessage, DeepSeekProvider, GeminiProvider, LocalAIProvider, OllamaProvider, OpenAIProvider, estimate_token_usage
 from ..providers.base import ChatProvider
 from ..suggestions import ChatAutoSuggest
@@ -76,6 +77,9 @@ from ..ui import (
     with_response_format_prompt,
     with_visible_thinking_prompt,
 )
+
+
+SIDEBAR_MODEL_LIMIT = 5
 
 
 TUI_LOGO = [
@@ -185,6 +189,7 @@ class TuiChatApp:
         self._stream_task: asyncio.Task[None] | None = None
         self.models: list[str] = []
         self.models_error: str | None = None
+        self.opened_generated_images: set[Path] = set()
         self._chat_line_count = 1
         self._scroll_to_bottom_pending = True
         self.file_browser: FileBrowserState | None = None
@@ -418,6 +423,7 @@ class TuiChatApp:
             ("/stop", "hentikan jawaban AI yang sedang diproses"),
             ("/regen", "generate ulang jawaban"),
             ("/mouse on|off", "klik tombol / blok teks"),
+            ("/image-popup on|off", "popup gambar hasil generate"),
             (f"/theme {'|'.join(SUPPORTED_THEMES)}", "ganti tema tampilan"),
             ("/accent <preset|#RRGGBB>", "ganti warna aksen"),
             ("/system", "lihat system global aktif"),
@@ -622,6 +628,7 @@ class TuiChatApp:
                 self.session.messages[assistant_index] = ChatMessage(
                     "assistant", current.content + chunk, images=current.images
                 )
+                self._open_new_generated_images(self.session.messages[assistant_index].content)
                 self._request_scroll_to_bottom()
                 self.app.invalidate()
         except asyncio.CancelledError:
@@ -956,22 +963,39 @@ class TuiChatApp:
             state = "ditampilkan" if self.cfg.show_thinking else "disembunyikan"
             self.status = f"Proses berpikir {state}."
             return
+        if cmd == "/image-popup":
+            if len(parts) < 2:
+                state = "aktif" if self.cfg.auto_open_images else "mati"
+                self.status = f"Popup gambar otomatis {state}. Gunakan /image-popup on atau off."
+                return
+            value = parts[1].lower()
+            if value in ("on", "true", "1", "yes", "ya"):
+                self.cfg.auto_open_images = True
+            elif value in ("off", "false", "0", "no", "tidak"):
+                self.cfg.auto_open_images = False
+            else:
+                self.status = "Gunakan: /image-popup on atau /image-popup off"
+                return
+            save_config(self.cfg)
+            state = "aktif" if self.cfg.auto_open_images else "mati"
+            self.status = f"Popup gambar otomatis {state}."
+            return
         if cmd == "/models":
             await self._refresh_models()
             if self.models_error:
                 return
             
             if len(parts) > 1 and parts[1].lower() == "all":
-                model_list_text = "### Daftar Lengkap Model\n\n" + "\n".join(f"- `{m}`" for m in self.models)
-                self.session.messages.append(ChatMessage("assistant", model_list_text))
-                self.selected_message_index = len(self.session.messages) - 1
-                self._request_scroll_to_bottom()
-                self.status = "Daftar lengkap model ditambahkan ke layar chat."
+                self._show_all_models()
                 return
 
             current = f"aktif: {self.cfg.active_model}"
-            shown = ", ".join(self.models[:5]) if self.models else "tidak ada model"
-            more = f" (+{len(self.models) - 5} lagi)" if len(self.models) > 5 else ""
+            shown = ", ".join(self.models[:SIDEBAR_MODEL_LIMIT]) if self.models else "tidak ada model"
+            more = (
+                f" (+{len(self.models) - SIDEBAR_MODEL_LIMIT} lagi)"
+                if len(self.models) > SIDEBAR_MODEL_LIMIT
+                else ""
+            )
             self.status = f"Model tersedia ({current}): {shown}{more}. Gunakan /models all untuk daftar lengkap."
             return
         if cmd == "/model" and len(parts) >= 2:
@@ -1205,6 +1229,46 @@ class TuiChatApp:
         self._render_cache.clear()
         self.status = f"Model aktif: {self.cfg.active_model}"
         self.app.invalidate()
+
+    def _open_generated_image(self, path: Path) -> None:
+        resolved = path.expanduser()
+        self.opened_generated_images.add(resolved)
+        success, message = open_image(resolved)
+        self.status = message
+        self.app.invalidate()
+
+    def _open_new_generated_images(self, text: str) -> None:
+        if not self.cfg.auto_open_images:
+            return
+        for path in extract_generated_image_paths(text):
+            resolved = path.expanduser()
+            if resolved in self.opened_generated_images:
+                continue
+            self._open_generated_image(resolved)
+
+    def _show_all_models(self) -> None:
+        if self.models_error:
+            self.status = f"Gagal mengambil model: {self.models_error}"
+            self.app.invalidate()
+            return
+        if not self.models:
+            self.status = "Belum ada daftar model. Gunakan /models untuk refresh."
+            self.app.invalidate()
+            return
+        model_list_text = "### Daftar Lengkap Model\n\n" + "\n".join(
+            f"- `{model}`" for model in self.models
+        )
+        self.session.messages.append(ChatMessage("assistant", model_list_text))
+        self.selected_message_index = len(self.session.messages) - 1
+        self._request_scroll_to_bottom()
+        self.status = "Daftar lengkap model ditambahkan ke layar chat."
+        self.app.invalidate()
+
+    def _sidebar_models(self) -> list[str]:
+        shown = self.models[:SIDEBAR_MODEL_LIMIT]
+        if self.cfg.active_model in self.models and self.cfg.active_model not in shown:
+            shown = shown[: SIDEBAR_MODEL_LIMIT - 1] + [self.cfg.active_model]
+        return shown
 
     def _select_message(self, index: int) -> None:
         if index < len(self.session.messages):
@@ -1812,7 +1876,8 @@ class TuiChatApp:
         elif not self.models:
             fragments.append(("class:sidebar.meta", "  mengambil model...\n"))
         else:
-            for model in self.models[:12]:
+            shown_models = self._sidebar_models()
+            for model in shown_models:
                 active = model == self.cfg.active_model
                 style = "class:sidebar.model.active" if active else "class:sidebar.model"
                 prefix = "●" if active else "○"
@@ -1824,9 +1889,17 @@ class TuiChatApp:
                         self._click(lambda name=model: self._select_model(name)),
                     )
                 )
-            if len(self.models) > 12:
+            if len(self.models) > SIDEBAR_MODEL_LIMIT:
+                hidden_count = len(self.models) - len(shown_models)
                 fragments.append(
-                    ("class:sidebar.meta", f"   +{len(self.models) - 12} models\n")
+                    (
+                        "class:sidebar.meta",
+                        f"   +{hidden_count} model lain\n",
+                        self._click(
+                            self._show_all_models,
+                            "Tampilkan semua model di layar chat",
+                        ),
+                    )
                 )
         return fragments
 
@@ -2072,7 +2145,7 @@ class TuiChatApp:
         selected = index == self.selected_message_index
         action_style = "class:button.hot" if selected else "class:button"
         meta = " aktif" if selected else ""
-        return [
+        actions = [
             ("", "    "),
             (
                 action_style,
@@ -2094,8 +2167,24 @@ class TuiChatApp:
                     "Generate ulang jawaban",
                 ),
             ),
-            ("class:message.meta", f" jawaban{meta}\n"),
         ]
+        image_paths = extract_generated_image_paths(self.session.messages[index].content)
+        if image_paths:
+            actions.extend(
+                [
+                    ("", " "),
+                    (
+                        action_style,
+                        " [▣] ",
+                        self._click(
+                            lambda path=image_paths[-1]: self._open_generated_image(path),
+                            "Buka gambar hasil generate",
+                        ),
+                    ),
+                ]
+            )
+        actions.append(("class:message.meta", f" jawaban{meta}\n"))
+        return actions
 
     def _render_welcome(self) -> list[tuple]:
         width = self._chat_width()
